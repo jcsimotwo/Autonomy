@@ -1,0 +1,2733 @@
+#include "Adaptive.h"
+#include "Adaptive_private.h"
+
+/* Named constants for jcsimotwo Function: '<S2>/optimizer' */
+#define Adaptive_Uscale                (1.0)
+#define Adaptive_Wdu                   (0.0012493021219858241)
+#define Adaptive_Wu                    (0.0)
+#define Adaptive_ny                    (2.0)
+#define Adaptive_p                     (15.0)
+#define Adaptive_uoff                  (0.0)
+
+/* Block signals (default storage) */
+B_Adaptive_T Adaptive_B;
+
+/* Block states (default storage) */
+DW_Adaptive_T Adaptive_DW;
+
+/* External inputs (root inport signals with default storage) */
+ExtU_Adaptive_T Adaptive_U;
+
+/* External outputs (root outports fed by signals with default storage) */
+ExtY_Adaptive_T Adaptive_Y;
+
+/* Real-time model */
+RT_MODEL_Adaptive_T Adaptive_M_;
+RT_MODEL_Adaptive_T *const Adaptive_M = &Adaptive_M_;
+
+/* Forward declaration for local functions */
+static void Adaptive_mpc_plantupdate(const real_T a[16], const real_T b[4],
+  real_T c[8], real_T b_A[25], real_T b_B[25], real_T b_C[10], const real_T b_D
+  [10], const real_T b_myindex[2], real_T b_Uscale, const real_T b_Yscale[2],
+  real_T Bu[5], real_T Bv[5], real_T Cm[10], real_T Dv[2], real_T Dvm[2], real_T
+  QQ[25], real_T RR[4], real_T NN[10]);
+static real_T Adaptive_mod(real_T x);
+static void Adaptive_mpc_updateFromNominal(real_T b_Mlim[80], const real_T
+  b_Mrows[80], real_T U0, real_T b_utarget[15], const real_T Y0[2], const real_T
+  b_Yscale[2], const real_T old_yoff[2], const real_T b_myindex[2], const real_T
+  X0[4], real_T b_xoff[5], const real_T DX0[4], real_T Bv[80], real_T *new_mvoff,
+  real_T new_yoff[2], real_T new_myoff[2]);
+static void Adaptive_mpcblock_refmd(const real_T ref[2], const real_T b_yoff[2],
+  const real_T b_RYscale[2], real_T rseq[30], real_T vseq[16], real_T *v);
+static void Adaptive_eye(real_T I[4]);
+static void Adaptive_mrdivide(const real_T b_A[4], const real_T b_B[4], real_T
+  y[4]);
+static void Adaptive_mpc_constraintcoef(const real_T b_A[25], const real_T Bu[80],
+  const real_T Bv[80], const real_T b_C[10], const real_T Dv[32], const real_T
+  b_Jm[75], real_T b_SuJm[150], real_T b_Sx[150], real_T b_Su1[30], real_T b_Hv
+  [480]);
+static void Adaptive_kron(const real_T b_A[225], real_T b_B, real_T K[225]);
+static void Adaptive_WtMult(real_T W, const real_T M[75], real_T WM[75]);
+static void Adaptive_mpc_calculatehessian(const real_T b_Wy[2], real_T b_Wu,
+  real_T b_Wdu, const real_T b_SuJm[150], const real_T I2Jm[75], const real_T
+  b_Jm[75], const real_T b_I1[15], const real_T b_Su1[30], const real_T b_Sx[150],
+  const real_T b_Hv[480], real_T b_H[25], real_T b_Ku1[5], real_T b_Kut[75],
+  real_T b_Kx[25], real_T b_Kv[80], real_T b_Kr[150]);
+static int32_T Adaptive_xpotrf(real_T b_A[36]);
+static void Adaptive_mpc_checkhessian(real_T b_H[36], real_T L[36], real_T *BadH);
+static void Adaptive_eye_g(real_T I[36]);
+static void Adaptive_linsolve(const real_T b_A[36], const real_T b_B[36], real_T
+  b_C[36]);
+static void Adaptive_Unconstrained(const real_T b_Hinv[36], const real_T f[6],
+  real_T x[6], int16_T n);
+static real_T Adaptive_norm(const real_T x[6]);
+static void Adaptive_abs(const real_T x[6], real_T y[6]);
+static void Adaptive_abs_o(const real_T x[80], real_T y[80]);
+static real_T Adaptive_xnrm2(int32_T n, const real_T x[36], int32_T ix0);
+static void Adaptive_xgemv(int32_T m, int32_T n, const real_T b_A[36], int32_T
+  ia0, const real_T x[36], int32_T ix0, real_T y[6]);
+static void Adaptive_xger(int32_T m, int32_T n, real_T alpha1, int32_T ix0,
+  const real_T y[6], real_T b_A[36], int32_T ia0);
+static void Adaptive_qr(const real_T b_A[36], real_T Q[36], real_T R[36]);
+static real_T Adaptive_KWIKfactor(const real_T b_Ac[480], const int16_T iC[80],
+  int16_T nA, const real_T b_Linv[36], real_T RLinv[36], real_T b_D[36], real_T
+  b_H[36], int16_T n);
+static void Adaptive_DropConstraint(int16_T kDrop, int16_T iA[80], int16_T *nA,
+  int16_T iC[80]);
+static void Adaptive_qpkwik(const real_T b_Linv[36], const real_T b_Hinv[36],
+  const real_T f[6], const real_T b_Ac[480], const real_T b[80], int16_T iA[80],
+  int16_T b_maxiter, real_T FeasTol, real_T x[6], real_T lambda[80], real_T
+  *status);
+static void Adaptive_mpc_solveQP(const real_T xQP[5], const real_T b_Kx[25],
+  const real_T b_Kr[150], const real_T rseq[30], const real_T b_Ku1[5], real_T
+  old_u, const real_T b_Kv[80], const real_T vseq[16], const real_T b_Kut[75],
+  const real_T b_utarget[15], const real_T b_Linv[36], const real_T b_Hinv[36],
+  const real_T b_Ac[480], const real_T Bc[80], boolean_T iA[80], real_T zopt[6],
+  real_T f[6], real_T *status);
+static void Adaptive_mpcblock_optimizer(const real_T rseq[30], const real_T
+  vseq[16], const real_T x[5], real_T old_u, const boolean_T iA[80], real_T b_ny,
+  const real_T b_Mlim[80], real_T b_Mx[400], real_T b_Mu1[80], real_T b_Mv[1280],
+  const real_T b_utarget[15], real_T b_uoff, real_T b_H[36], real_T b_Ac[480],
+  const real_T b_Wy[2], const real_T b_Jm[75], const real_T b_I1[15], const
+  real_T b_A[25], const real_T Bu[80], const real_T Bv[80], const real_T b_C[10],
+  const real_T Dv[32], const real_T b_Mrows[80], real_T *u, real_T useq[15],
+  real_T *status, boolean_T iAout[80]);
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_plantupdate(const real_T a[16], const real_T b[4],
+  real_T c[8], real_T b_A[25], real_T b_B[25], real_T b_C[10], const real_T b_D
+  [10], const real_T b_myindex[2], real_T b_Uscale, const real_T b_Yscale[2],
+  real_T Bu[5], real_T Bv[5], real_T Cm[10], real_T Dv[2], real_T Dvm[2], real_T
+  QQ[25], real_T RR[4], real_T NN[10])
+{
+  int8_T UnknownIn[4];
+  real_T CovMat[49];
+  int32_T i;
+  real_T b_B_0[28];
+  real_T b_B_1[28];
+  int32_T i_0;
+  int32_T CovMat_tmp;
+  for (i = 0; i < 4; i++) {
+    b_B[i] = b[i] * b_Uscale;
+    c[i << 1] /= b_Yscale[0];
+    c[1 + (i << 1)] /= b_Yscale[1];
+    b_A[5 * i] = a[i << 2];
+    b_A[1 + 5 * i] = a[(i << 2) + 1];
+    b_A[2 + 5 * i] = a[(i << 2) + 2];
+    b_A[3 + 5 * i] = a[(i << 2) + 3];
+    b_C[i << 1] = c[i << 1];
+    b_C[1 + (i << 1)] = c[(i << 1) + 1];
+  }
+
+  for (i = 0; i < 5; i++) {
+    Bu[i] = b_B[i];
+    Bv[i] = b_B[5 + i];
+    Cm[i << 1] = b_C[((i << 1) + (int32_T)b_myindex[0]) - 1];
+    Cm[1 + (i << 1)] = b_C[((i << 1) + (int32_T)b_myindex[1]) - 1];
+  }
+
+  Dv[0] = b_D[2];
+  Dvm[0] = b_D[(int32_T)b_myindex[0] + 1];
+  Dv[1] = b_D[3];
+  Dvm[1] = b_D[(int32_T)b_myindex[1] + 1];
+  UnknownIn[0] = 1;
+  UnknownIn[1] = 3;
+  UnknownIn[2] = 4;
+  UnknownIn[3] = 5;
+  for (i = 0; i < 4; i++) {
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      b_B_0[i_0 + 7 * i] = b_B[(UnknownIn[i] - 1) * 5 + i_0];
+    }
+
+    b_B_0[5 + 7 * i] = b_D[(((UnknownIn[i] - 1) << 1) + (int32_T)b_myindex[0]) -
+      1];
+    b_B_0[6 + 7 * i] = b_D[(((UnknownIn[i] - 1) << 1) + (int32_T)b_myindex[1]) -
+      1];
+  }
+
+  for (i = 0; i < 5; i++) {
+    b_B_1[i << 2] = b_B[i];
+    b_B_1[1 + (i << 2)] = b_B[i + 10];
+    b_B_1[2 + (i << 2)] = b_B[i + 15];
+    b_B_1[3 + (i << 2)] = b_B[i + 20];
+  }
+
+  for (i = 0; i < 2; i++) {
+    b_B_1[(i + 5) << 2] = b_D[(int32_T)b_myindex[i] - 1];
+    b_B_1[1 + ((i + 5) << 2)] = b_D[(int32_T)b_myindex[i] + 3];
+    b_B_1[2 + ((i + 5) << 2)] = b_D[(int32_T)b_myindex[i] + 5];
+    b_B_1[3 + ((i + 5) << 2)] = b_D[(int32_T)b_myindex[i] + 7];
+  }
+
+  for (i = 0; i < 7; i++) {
+    for (i_0 = 0; i_0 < 7; i_0++) {
+      CovMat_tmp = i_0 + 7 * i;
+      CovMat[CovMat_tmp] = 0.0;
+      CovMat[CovMat_tmp] = CovMat[7 * i + i_0] + b_B_1[i << 2] * b_B_0[i_0];
+      CovMat[CovMat_tmp] = b_B_1[(i << 2) + 1] * b_B_0[i_0 + 7] + CovMat[7 * i +
+        i_0];
+      CovMat[CovMat_tmp] = b_B_1[(i << 2) + 2] * b_B_0[i_0 + 14] + CovMat[7 * i
+        + i_0];
+      CovMat[CovMat_tmp] = b_B_1[(i << 2) + 3] * b_B_0[i_0 + 21] + CovMat[7 * i
+        + i_0];
+    }
+  }
+
+  for (i = 0; i < 5; i++) {
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      QQ[i_0 + 5 * i] = CovMat[7 * i + i_0];
+    }
+  }
+
+  for (i = 0; i < 2; i++) {
+    CovMat_tmp = (5 + i) * 7;
+    RR[i << 1] = CovMat[CovMat_tmp + 5];
+    RR[1 + (i << 1)] = CovMat[CovMat_tmp + 6];
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      NN[i_0 + 5 * i] = CovMat[CovMat_tmp + i_0];
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static real_T Adaptive_mod(real_T x)
+{
+  real_T r;
+  if ((!rtIsInf(x)) && (!rtIsNaN(x))) {
+    if (x == 0.0) {
+      r = 0.0;
+    } else {
+      r = fmod(x, Adaptive_ny);
+      if (r == 0.0) {
+        r = 0.0;
+      } else {
+        if (x < 0.0) {
+          r += Adaptive_ny;
+        }
+      }
+    }
+  } else {
+    r = (rtNaN);
+  }
+
+  return r;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_updateFromNominal(real_T b_Mlim[80], const real_T
+  b_Mrows[80], real_T U0, real_T b_utarget[15], const real_T Y0[2], const real_T
+  b_Yscale[2], const real_T old_yoff[2], const real_T b_myindex[2], const real_T
+  X0[4], real_T b_xoff[5], const real_T DX0[4], real_T Bv[80], real_T *new_mvoff,
+  real_T new_yoff[2], real_T new_myoff[2])
+{
+  real_T k;
+  int32_T ct;
+  new_yoff[0] = Y0[0] / b_Yscale[0];
+  new_yoff[1] = Y0[1] / b_Yscale[1];
+  *new_mvoff = U0;
+  new_myoff[0] = new_yoff[(int32_T)b_myindex[0] - 1];
+  new_myoff[1] = new_yoff[(int32_T)b_myindex[1] - 1];
+  for (ct = 0; ct < 80; ct++) {
+    if (b_Mrows[ct] <= 30.0) {
+      k = Adaptive_mod(b_Mrows[ct] - 1.0) + 1.0;
+      b_Mlim[ct] += old_yoff[(int32_T)k - 1] - new_yoff[(int32_T)k - 1];
+    } else if (b_Mrows[ct] <= 60.0) {
+      k = Adaptive_mod((b_Mrows[ct] - 30.0) - 1.0) + 1.0;
+      b_Mlim[ct] -= old_yoff[(int32_T)k - 1] - new_yoff[(int32_T)k - 1];
+    } else if (b_Mrows[ct] <= 75.0) {
+      b_Mlim[ct] += Adaptive_uoff - U0;
+    } else {
+      if (b_Mrows[ct] <= 90.0) {
+        b_Mlim[ct] -= Adaptive_uoff - U0;
+      }
+    }
+  }
+
+  for (ct = 0; ct < 15; ct++) {
+    b_utarget[ct] -= U0;
+  }
+
+  b_xoff[0] = X0[0];
+  Bv[0] = DX0[0];
+  b_xoff[1] = X0[1];
+  Bv[1] = DX0[1];
+  b_xoff[2] = X0[2];
+  Bv[2] = DX0[2];
+  b_xoff[3] = X0[3];
+  Bv[3] = DX0[3];
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpcblock_refmd(const real_T ref[2], const real_T b_yoff[2],
+  const real_T b_RYscale[2], real_T rseq[30], real_T vseq[16], real_T *v)
+{
+  int32_T i;
+  int32_T rseq_tmp;
+  for (i = 0; i < 16; i++) {
+    vseq[i] = 1.0;
+  }
+
+  memset(&rseq[0], 0, 30U * sizeof(real_T));
+  for (i = 0; i < 15; i++) {
+    rseq_tmp = i * (int32_T)Adaptive_ny;
+    rseq[rseq_tmp] = ref[0] * b_RYscale[0] - b_yoff[0];
+    rseq[1 + rseq_tmp] = ref[1] * b_RYscale[1] - b_yoff[1];
+  }
+
+  *v = 1.0;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_eye(real_T I[4])
+{
+  I[1] = 0.0;
+  I[2] = 0.0;
+  I[0] = 1.0;
+  I[3] = 1.0;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mrdivide(const real_T b_A[4], const real_T b_B[4], real_T
+  y[4])
+{
+  int32_T r1;
+  int32_T r2;
+  real_T a21;
+  real_T a22;
+  if (fabs(b_B[1]) > fabs(b_B[0])) {
+    r1 = 1;
+    r2 = 0;
+  } else {
+    r1 = 0;
+    r2 = 1;
+  }
+
+  a21 = b_B[r2] / b_B[r1];
+  a22 = b_B[2 + r2] - b_B[2 + r1] * a21;
+  y[r1 << 1] = b_A[0] / b_B[r1];
+  y[r2 << 1] = (b_A[2] - y[r1 << 1] * b_B[2 + r1]) / a22;
+  y[r1 << 1] -= y[r2 << 1] * a21;
+  y[1 + (r1 << 1)] = b_A[1] / b_B[r1];
+  y[1 + (r2 << 1)] = (b_A[3] - y[(r1 << 1) + 1] * b_B[2 + r1]) / a22;
+  y[1 + (r1 << 1)] -= y[(r2 << 1) + 1] * a21;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_constraintcoef(const real_T b_A[25], const real_T Bu[80],
+  const real_T Bv[80], const real_T b_C[10], const real_T Dv[32], const real_T
+  b_Jm[75], real_T b_SuJm[150], real_T b_Sx[150], real_T b_Su1[30], real_T b_Hv
+  [480])
+{
+  real_T CA[10];
+  real_T Sum[2];
+  real_T Su[450];
+  int8_T rows[2];
+  int32_T i;
+  int32_T i_0;
+  int32_T i_1;
+  real_T b_C_0[2];
+  int8_T i_2;
+  real_T tmp;
+  real_T Sum_0[30];
+  real_T CA_0[32];
+  real_T CA_1[10];
+  int32_T b_Hv_tmp;
+  for (i_0 = 0; i_0 < 2; i_0++) {
+    Sum[i_0] = 0.0;
+    b_C_0[i_0] = 0.0;
+    for (b_Hv_tmp = 0; b_Hv_tmp < 5; b_Hv_tmp++) {
+      CA[i_0 + (b_Hv_tmp << 1)] = 0.0;
+      for (i_1 = 0; i_1 < 5; i_1++) {
+        CA[i_0 + (b_Hv_tmp << 1)] += b_C[(i_1 << 1) + i_0] * b_A[5 * b_Hv_tmp +
+          i_1];
+      }
+
+      Sum[i_0] += b_C[(b_Hv_tmp << 1) + i_0] * Bu[b_Hv_tmp];
+      b_C_0[i_0] += b_C[(b_Hv_tmp << 1) + i_0] * Bv[b_Hv_tmp];
+    }
+
+    b_Hv[i_0] = b_C_0[i_0];
+    b_Hv[30 + i_0] = Dv[i_0];
+  }
+
+  for (i_0 = 0; i_0 < 14; i_0++) {
+    b_Hv_tmp = 30 * (i_0 + 2);
+    b_Hv[b_Hv_tmp] = 0.0;
+    b_Hv[1 + b_Hv_tmp] = 0.0;
+  }
+
+  for (i_0 = 0; i_0 < 16; i_0++) {
+    memset(&b_Hv[i_0 * 30 + 2], 0, 28U * sizeof(real_T));
+  }
+
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    b_Sx[30 * i_0] = CA[i_0 << 1];
+    b_Sx[1 + 30 * i_0] = CA[(i_0 << 1) + 1];
+    memset(&b_Sx[i_0 * 30 + 2], 0, 28U * sizeof(real_T));
+  }
+
+  b_Su1[0] = Sum[0];
+  b_Su1[1] = Sum[1];
+  memset(&b_Su1[2], 0, 28U * sizeof(real_T));
+  Su[0] = Sum[0];
+  Su[1] = Sum[1];
+  for (i_0 = 0; i_0 < 14; i_0++) {
+    b_Hv_tmp = 30 * (i_0 + 1);
+    Su[b_Hv_tmp] = 0.0;
+    Su[1 + b_Hv_tmp] = 0.0;
+  }
+
+  for (i_0 = 0; i_0 < 15; i_0++) {
+    memset(&Su[i_0 * 30 + 2], 0, 28U * sizeof(real_T));
+  }
+
+  for (i = 0; i < 14; i++) {
+    i_2 = (int8_T)(((i + 1) << 1) + 1);
+    for (i_0 = 0; i_0 < 2; i_0++) {
+      rows[i_0] = (int8_T)(i_0 + i_2);
+      tmp = 0.0;
+      for (b_Hv_tmp = 0; b_Hv_tmp < 5; b_Hv_tmp++) {
+        tmp += CA[(b_Hv_tmp << 1) + i_0] * Bu[b_Hv_tmp];
+      }
+
+      Sum[i_0] += tmp;
+    }
+
+    b_Su1[rows[0] - 1] = Sum[0];
+    Sum_0[0] = Sum[0];
+    b_Su1[rows[1] - 1] = Sum[1];
+    Sum_0[1] = Sum[1];
+    for (i_0 = 0; i_0 < 14; i_0++) {
+      Sum_0[(i_0 + 1) << 1] = Su[(30 * i_0 + rows[0]) - 3];
+      Sum_0[1 + ((i_0 + 1) << 1)] = Su[(30 * i_0 + rows[1]) - 3];
+    }
+
+    for (i_0 = 0; i_0 < 15; i_0++) {
+      Su[(rows[0] + 30 * i_0) - 1] = Sum_0[i_0 << 1];
+      Su[(rows[1] + 30 * i_0) - 1] = Sum_0[(i_0 << 1) + 1];
+    }
+
+    for (i_0 = 0; i_0 < 2; i_0++) {
+      b_C_0[i_0] = 0.0;
+      for (b_Hv_tmp = 0; b_Hv_tmp < 5; b_Hv_tmp++) {
+        b_C_0[i_0] += CA[(b_Hv_tmp << 1) + i_0] * Bv[b_Hv_tmp];
+      }
+
+      CA_0[i_0] = b_C_0[i_0];
+    }
+
+    for (i_0 = 0; i_0 < 15; i_0++) {
+      CA_0[(i_0 + 1) << 1] = b_Hv[(30 * i_0 + rows[0]) - 3];
+      CA_0[1 + ((i_0 + 1) << 1)] = b_Hv[(30 * i_0 + rows[1]) - 3];
+    }
+
+    for (i_0 = 0; i_0 < 16; i_0++) {
+      b_Hv[(rows[0] + 30 * i_0) - 1] = CA_0[i_0 << 1];
+      b_Hv[(rows[1] + 30 * i_0) - 1] = CA_0[(i_0 << 1) + 1];
+    }
+
+    for (i_0 = 0; i_0 < 2; i_0++) {
+      for (b_Hv_tmp = 0; b_Hv_tmp < 5; b_Hv_tmp++) {
+        CA_1[i_0 + (b_Hv_tmp << 1)] = 0.0;
+        for (i_1 = 0; i_1 < 5; i_1++) {
+          CA_1[i_0 + (b_Hv_tmp << 1)] += CA[(i_1 << 1) + i_0] * b_A[5 * b_Hv_tmp
+            + i_1];
+        }
+      }
+    }
+
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      b_Sx[(rows[0] + 30 * i_0) - 1] = CA_1[i_0 << 1];
+      CA[i_0 << 1] = CA_1[i_0 << 1];
+      b_Sx[(rows[1] + 30 * i_0) - 1] = CA_1[(i_0 << 1) + 1];
+      CA[1 + (i_0 << 1)] = CA_1[(i_0 << 1) + 1];
+    }
+  }
+
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (b_Hv_tmp = 0; b_Hv_tmp < 30; b_Hv_tmp++) {
+      i = b_Hv_tmp + 30 * i_0;
+      b_SuJm[i] = 0.0;
+      for (i_1 = 0; i_1 < 15; i_1++) {
+        b_SuJm[i] = Su[30 * i_1 + b_Hv_tmp] * b_Jm[15 * i_0 + i_1] + b_SuJm[30 *
+          i_0 + b_Hv_tmp];
+      }
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_kron(const real_T b_A[225], real_T b_B, real_T K[225])
+{
+  int32_T kidx;
+  int32_T b_j1;
+  int32_T i1;
+  kidx = -1;
+  for (b_j1 = 0; b_j1 < 15; b_j1++) {
+    for (i1 = 0; i1 < 15; i1++) {
+      kidx++;
+      K[kidx] = b_A[15 * b_j1 + i1] * b_B;
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_WtMult(real_T W, const real_T M[75], real_T WM[75])
+{
+  int32_T i;
+  int32_T i_0;
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i = 0; i < 15; i++) {
+      WM[i + 15 * i_0] = M[15 * i_0 + i] * W;
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_calculatehessian(const real_T b_Wy[2], real_T b_Wu,
+  real_T b_Wdu, const real_T b_SuJm[150], const real_T I2Jm[75], const real_T
+  b_Jm[75], const real_T b_I1[15], const real_T b_Su1[30], const real_T b_Sx[150],
+  const real_T b_Hv[480], real_T b_H[25], real_T b_Ku1[5], real_T b_Kut[75],
+  real_T b_Kx[25], real_T b_Kv[80], real_T b_Kr[150])
+{
+  int16_T ixw;
+  int32_T i;
+  real_T tmp[75];
+  int32_T i_0;
+  real_T b_SuJm_0[25];
+  real_T b_Jm_0[25];
+  int32_T i_1;
+  real_T tmp_0;
+  real_T b_Su1_0[5];
+  real_T b_I1_0[5];
+  int32_T b_SuJm_tmp;
+  int32_T tmp_1;
+  int32_T tmp_2;
+  ixw = 1;
+  for (i = 0; i < 30; i++) {
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      b_Kr[i + 30 * i_0] = b_SuJm[30 * i_0 + i] * b_Wy[ixw - 1];
+    }
+
+    ixw++;
+    if (ixw > 2) {
+      ixw = 1;
+    }
+  }
+
+  Adaptive_WtMult(b_Wu, I2Jm, b_Kut);
+  Adaptive_WtMult(b_Wdu, b_Jm, tmp);
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i = 0; i < 5; i++) {
+      b_SuJm_tmp = i_0 + 5 * i;
+      b_SuJm_0[b_SuJm_tmp] = 0.0;
+      for (i_1 = 0; i_1 < 30; i_1++) {
+        b_SuJm_0[b_SuJm_tmp] = b_SuJm[30 * i_0 + i_1] * b_Kr[30 * i + i_1] +
+          b_SuJm_0[5 * i + i_0];
+      }
+
+      b_Jm_0[b_SuJm_tmp] = 0.0;
+      tmp_0 = 0.0;
+      for (i_1 = 0; i_1 < 15; i_1++) {
+        tmp_1 = 15 * i_0 + i_1;
+        tmp_2 = 15 * i + i_1;
+        tmp_0 += I2Jm[tmp_1] * b_Kut[tmp_2];
+        b_Jm_0[b_SuJm_tmp] = b_Jm[tmp_1] * tmp[tmp_2] + b_Jm_0[5 * i + i_0];
+      }
+
+      b_H[b_SuJm_tmp] = (b_SuJm_0[5 * i + i_0] + b_Jm_0[5 * i + i_0]) + tmp_0;
+    }
+
+    b_Su1_0[i_0] = 0.0;
+    for (i = 0; i < 30; i++) {
+      b_Su1_0[i_0] += b_Kr[30 * i_0 + i] * b_Su1[i];
+    }
+
+    b_I1_0[i_0] = 0.0;
+    for (i = 0; i < 15; i++) {
+      b_I1_0[i_0] += b_Kut[15 * i_0 + i] * b_I1[i];
+    }
+
+    b_Ku1[i_0] = b_Su1_0[i_0] + b_I1_0[i_0];
+  }
+
+  for (i_0 = 0; i_0 < 75; i_0++) {
+    b_Kut[i_0] = -b_Kut[i_0];
+  }
+
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i = 0; i < 5; i++) {
+      b_SuJm_tmp = i_0 + 5 * i;
+      b_Kx[b_SuJm_tmp] = 0.0;
+      for (i_1 = 0; i_1 < 30; i_1++) {
+        b_Kx[b_SuJm_tmp] = b_Sx[30 * i_0 + i_1] * b_Kr[30 * i + i_1] + b_Kx[5 *
+          i + i_0];
+      }
+    }
+  }
+
+  for (i_0 = 0; i_0 < 16; i_0++) {
+    for (i = 0; i < 5; i++) {
+      b_Kv[i_0 + (i << 4)] = 0.0;
+      for (i_1 = 0; i_1 < 30; i_1++) {
+        b_Kv[i_0 + (i << 4)] += b_Hv[30 * i_0 + i_1] * b_Kr[30 * i + i_1];
+      }
+    }
+  }
+
+  for (i_0 = 0; i_0 < 150; i_0++) {
+    b_Kr[i_0] = -b_Kr[i_0];
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static int32_T Adaptive_xpotrf(real_T b_A[36])
+{
+  int32_T info;
+  int32_T jj;
+  real_T ajj;
+  int32_T j;
+  int32_T ix;
+  int32_T iy;
+  int32_T k;
+  real_T c;
+  int32_T b_iy;
+  int32_T e;
+  int32_T ia;
+  boolean_T exitg1;
+  info = 0;
+  j = 0;
+  exitg1 = false;
+  while ((!exitg1) && (j + 1 < 7)) {
+    jj = j * 6 + j;
+    ajj = 0.0;
+    if (!(j < 1)) {
+      ix = j;
+      iy = j;
+      for (k = 1; k <= j; k++) {
+        ajj += b_A[ix] * b_A[iy];
+        ix += 6;
+        iy += 6;
+      }
+    }
+
+    ajj = b_A[jj] - ajj;
+    if (ajj > 0.0) {
+      ajj = sqrt(ajj);
+      b_A[jj] = ajj;
+      if (j + 1 < 6) {
+        if (j != 0) {
+          ix = j;
+          iy = ((j - 1) * 6 + j) + 2;
+          for (k = j + 2; k <= iy; k += 6) {
+            c = -b_A[ix];
+            b_iy = jj + 1;
+            e = (k - j) + 4;
+            for (ia = k; ia <= e; ia++) {
+              b_A[b_iy] += b_A[ia - 1] * c;
+              b_iy++;
+            }
+
+            ix += 6;
+          }
+        }
+
+        ajj = 1.0 / ajj;
+        ix = (jj - j) + 6;
+        for (jj++; jj < ix; jj++) {
+          b_A[jj] *= ajj;
+        }
+      }
+
+      j++;
+    } else {
+      b_A[jj] = ajj;
+      info = j + 1;
+      exitg1 = true;
+    }
+  }
+
+  return info;
+}
+
+real_T rt_powd_snf(real_T u0, real_T u1)
+{
+  real_T y;
+  real_T tmp;
+  real_T tmp_0;
+  if (rtIsNaN(u0) || rtIsNaN(u1)) {
+    y = (rtNaN);
+  } else {
+    tmp = fabs(u0);
+    tmp_0 = fabs(u1);
+    if (rtIsInf(u1)) {
+      if (tmp == 1.0) {
+        y = 1.0;
+      } else if (tmp > 1.0) {
+        if (u1 > 0.0) {
+          y = (rtInf);
+        } else {
+          y = 0.0;
+        }
+      } else if (u1 > 0.0) {
+        y = 0.0;
+      } else {
+        y = (rtInf);
+      }
+    } else if (tmp_0 == 0.0) {
+      y = 1.0;
+    } else if (tmp_0 == 1.0) {
+      if (u1 > 0.0) {
+        y = u0;
+      } else {
+        y = 1.0 / u0;
+      }
+    } else if (u1 == 2.0) {
+      y = u0 * u0;
+    } else if ((u1 == 0.5) && (u0 >= 0.0)) {
+      y = sqrt(u0);
+    } else if ((u0 < 0.0) && (u1 > floor(u1))) {
+      y = (rtNaN);
+    } else {
+      y = pow(u0, u1);
+    }
+  }
+
+  return y;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_checkhessian(real_T b_H[36], real_T L[36], real_T *BadH)
+{
+  real_T normH;
+  real_T d[6];
+  int32_T idx;
+  real_T s;
+  int8_T I[36];
+  int32_T b_idx;
+  int32_T f_k;
+  boolean_T exitg1;
+  boolean_T exitg2;
+  boolean_T guard1 = false;
+  boolean_T guard2 = false;
+  *BadH = 0.0;
+  memcpy(&L[0], &b_H[0], 36U * sizeof(real_T));
+  idx = Adaptive_xpotrf(L);
+  guard1 = false;
+  if (idx == 0) {
+    for (idx = 0; idx < 6; idx++) {
+      d[idx] = L[6 * idx + idx];
+    }
+
+    if (!rtIsNaN(d[0])) {
+      idx = 1;
+    } else {
+      idx = 0;
+      b_idx = 2;
+      exitg2 = false;
+      while ((!exitg2) && (b_idx < 7)) {
+        if (!rtIsNaN(d[b_idx - 1])) {
+          idx = b_idx;
+          exitg2 = true;
+        } else {
+          b_idx++;
+        }
+      }
+    }
+
+    if (idx == 0) {
+      normH = d[0];
+    } else {
+      normH = d[idx - 1];
+      while (idx + 1 < 7) {
+        if (normH > d[idx]) {
+          normH = d[idx];
+        }
+
+        idx++;
+      }
+    }
+
+    if (normH > 1.4901161193847656E-7) {
+    } else {
+      guard1 = true;
+    }
+  } else {
+    guard1 = true;
+  }
+
+  if (guard1) {
+    normH = 0.0;
+    idx = 0;
+    exitg2 = false;
+    while ((!exitg2) && (idx < 6)) {
+      s = 0.0;
+      for (b_idx = 0; b_idx < 6; b_idx++) {
+        s += fabs(b_H[6 * b_idx + idx]);
+      }
+
+      if (rtIsNaN(s)) {
+        normH = (rtNaN);
+        exitg2 = true;
+      } else {
+        if (s > normH) {
+          normH = s;
+        }
+
+        idx++;
+      }
+    }
+
+    if (normH >= 1.0E+10) {
+      *BadH = 2.0;
+    } else {
+      idx = 0;
+      exitg1 = false;
+      while ((!exitg1) && (idx <= 4)) {
+        for (b_idx = 0; b_idx < 36; b_idx++) {
+          I[b_idx] = 0;
+        }
+
+        for (b_idx = 0; b_idx < 6; b_idx++) {
+          I[b_idx + 6 * b_idx] = 1;
+        }
+
+        normH = rt_powd_snf(10.0, (real_T)idx) * 1.4901161193847656E-7;
+        for (b_idx = 0; b_idx < 36; b_idx++) {
+          s = normH * (real_T)I[b_idx] + b_H[b_idx];
+          L[b_idx] = s;
+          b_H[b_idx] = s;
+        }
+
+        b_idx = Adaptive_xpotrf(L);
+        guard2 = false;
+        if (b_idx == 0) {
+          for (b_idx = 0; b_idx < 6; b_idx++) {
+            d[b_idx] = L[6 * b_idx + b_idx];
+          }
+
+          if (!rtIsNaN(d[0])) {
+            b_idx = 1;
+          } else {
+            b_idx = 0;
+            f_k = 2;
+            exitg2 = false;
+            while ((!exitg2) && (f_k < 7)) {
+              if (!rtIsNaN(d[f_k - 1])) {
+                b_idx = f_k;
+                exitg2 = true;
+              } else {
+                f_k++;
+              }
+            }
+          }
+
+          if (b_idx == 0) {
+            normH = d[0];
+          } else {
+            normH = d[b_idx - 1];
+            while (b_idx + 1 < 7) {
+              if (normH > d[b_idx]) {
+                normH = d[b_idx];
+              }
+
+              b_idx++;
+            }
+          }
+
+          if (normH > 1.4901161193847656E-7) {
+            *BadH = 1.0;
+            exitg1 = true;
+          } else {
+            guard2 = true;
+          }
+        } else {
+          guard2 = true;
+        }
+
+        if (guard2) {
+          *BadH = 3.0;
+          idx++;
+        }
+      }
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_eye_g(real_T I[36])
+{
+  int32_T k;
+  memset(&I[0], 0, 36U * sizeof(real_T));
+  for (k = 0; k < 6; k++) {
+    I[k + 6 * k] = 1.0;
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_linsolve(const real_T b_A[36], const real_T b_B[36], real_T
+  b_C[36])
+{
+  int32_T j;
+  int32_T jBcol;
+  int32_T kAcol;
+  int32_T k;
+  int32_T b_i;
+  int32_T b_C_tmp;
+  for (j = 0; j < 6; j++) {
+    for (jBcol = 0; jBcol < 6; jBcol++) {
+      b_C[jBcol + 6 * j] = b_B[6 * j + jBcol];
+    }
+  }
+
+  for (j = 0; j < 6; j++) {
+    jBcol = 6 * j;
+    for (k = 0; k < 6; k++) {
+      kAcol = 6 * k;
+      b_i = k + jBcol;
+      if (b_C[b_i] != 0.0) {
+        b_C[b_i] = b_C[k + jBcol] / b_A[k + kAcol];
+        for (b_i = k + 1; b_i + 1 < 7; b_i++) {
+          b_C_tmp = b_i + jBcol;
+          b_C[b_C_tmp] -= b_C[k + jBcol] * b_A[b_i + kAcol];
+        }
+      }
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_Unconstrained(const real_T b_Hinv[36], const real_T f[6],
+  real_T x[6], int16_T n)
+{
+  int16_T i;
+  real_T tmp;
+  int32_T i_0;
+  for (i = 1; i <= n; i++) {
+    tmp = 0.0;
+    for (i_0 = 0; i_0 < 6; i_0++) {
+      tmp += -b_Hinv[(6 * i_0 + i) - 1] * f[i_0];
+    }
+
+    x[i - 1] = tmp;
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static real_T Adaptive_norm(const real_T x[6])
+{
+  real_T y;
+  real_T scale;
+  real_T absxk;
+  real_T t;
+  int32_T k;
+  y = 0.0;
+  scale = 3.3121686421112381E-170;
+  for (k = 0; k < 6; k++) {
+    absxk = fabs(x[k]);
+    if (absxk > scale) {
+      t = scale / absxk;
+      y = y * t * t + 1.0;
+      scale = absxk;
+    } else {
+      t = absxk / scale;
+      y += t * t;
+    }
+  }
+
+  return scale * sqrt(y);
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_abs(const real_T x[6], real_T y[6])
+{
+  int32_T k;
+  for (k = 0; k < 6; k++) {
+    y[k] = fabs(x[k]);
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_abs_o(const real_T x[80], real_T y[80])
+{
+  int32_T k;
+  for (k = 0; k < 80; k++) {
+    y[k] = fabs(x[k]);
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static real_T Adaptive_xnrm2(int32_T n, const real_T x[36], int32_T ix0)
+{
+  real_T y;
+  real_T scale;
+  int32_T kend;
+  real_T absxk;
+  real_T t;
+  int32_T k;
+  y = 0.0;
+  if (!(n < 1)) {
+    if (n == 1) {
+      y = fabs(x[ix0 - 1]);
+    } else {
+      scale = 3.3121686421112381E-170;
+      kend = (ix0 + n) - 1;
+      for (k = ix0; k <= kend; k++) {
+        absxk = fabs(x[k - 1]);
+        if (absxk > scale) {
+          t = scale / absxk;
+          y = y * t * t + 1.0;
+          scale = absxk;
+        } else {
+          t = absxk / scale;
+          y += t * t;
+        }
+      }
+
+      y = scale * sqrt(y);
+    }
+  }
+
+  return y;
+}
+
+real_T rt_hypotd_snf(real_T u0, real_T u1)
+{
+  real_T y;
+  real_T a;
+  a = fabs(u0);
+  y = fabs(u1);
+  if (a < y) {
+    a /= y;
+    y *= sqrt(a * a + 1.0);
+  } else if (a > y) {
+    y /= a;
+    y = sqrt(y * y + 1.0) * a;
+  } else {
+    if (!rtIsNaN(y)) {
+      y = a * 1.4142135623730951;
+    }
+  }
+
+  return y;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_xgemv(int32_T m, int32_T n, const real_T b_A[36], int32_T
+  ia0, const real_T x[36], int32_T ix0, real_T y[6])
+{
+  int32_T ix;
+  real_T c;
+  int32_T iy;
+  int32_T b;
+  int32_T iac;
+  int32_T d;
+  int32_T ia;
+  if (!((m == 0) || (n == 0))) {
+    for (iy = 1; iy <= n; iy++) {
+      y[iy - 1] = 0.0;
+    }
+
+    iy = 0;
+    b = (n - 1) * 6 + ia0;
+    for (iac = ia0; iac <= b; iac += 6) {
+      ix = ix0;
+      c = 0.0;
+      d = (iac + m) - 1;
+      for (ia = iac; ia <= d; ia++) {
+        c += b_A[ia - 1] * x[ix - 1];
+        ix++;
+      }
+
+      y[iy] += c;
+      iy++;
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_xger(int32_T m, int32_T n, real_T alpha1, int32_T ix0,
+  const real_T y[6], real_T b_A[36], int32_T ia0)
+{
+  int32_T jA;
+  int32_T jy;
+  real_T temp;
+  int32_T ix;
+  int32_T j;
+  int32_T b;
+  int32_T ijA;
+  if (!(alpha1 == 0.0)) {
+    jA = ia0 - 1;
+    jy = 0;
+    for (j = 1; j <= n; j++) {
+      if (y[jy] != 0.0) {
+        temp = y[jy] * alpha1;
+        ix = ix0;
+        b = m + jA;
+        for (ijA = jA; ijA < b; ijA++) {
+          b_A[ijA] += b_A[ix - 1] * temp;
+          ix++;
+        }
+      }
+
+      jy++;
+      jA += 6;
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_qr(const real_T b_A[36], real_T Q[36], real_T R[36])
+{
+  real_T c_A[36];
+  real_T tau[6];
+  real_T work[6];
+  int32_T i_i;
+  real_T b_atmp;
+  real_T xnorm;
+  int32_T lastv;
+  int32_T lastc;
+  int32_T coltop;
+  int32_T ia;
+  int32_T itau;
+  int32_T i;
+  int32_T exitg1;
+  boolean_T exitg2;
+  memcpy(&c_A[0], &b_A[0], 36U * sizeof(real_T));
+  for (i = 0; i < 6; i++) {
+    work[i] = 0.0;
+  }
+
+  for (itau = 0; itau < 6; itau++) {
+    i_i = itau * 6 + itau;
+    if (itau + 1 < 6) {
+      b_atmp = c_A[i_i];
+      tau[itau] = 0.0;
+      xnorm = Adaptive_xnrm2(5 - itau, c_A, i_i + 2);
+      if (xnorm != 0.0) {
+        xnorm = rt_hypotd_snf(c_A[i_i], xnorm);
+        if (c_A[i_i] >= 0.0) {
+          xnorm = -xnorm;
+        }
+
+        if (fabs(xnorm) < 1.0020841800044864E-292) {
+          i = 0;
+          lastv = (i_i - itau) + 6;
+          do {
+            i++;
+            for (lastc = i_i + 1; lastc < lastv; lastc++) {
+              c_A[lastc] *= 9.9792015476736E+291;
+            }
+
+            xnorm *= 9.9792015476736E+291;
+            b_atmp *= 9.9792015476736E+291;
+          } while (!(fabs(xnorm) >= 1.0020841800044864E-292));
+
+          xnorm = rt_hypotd_snf(b_atmp, Adaptive_xnrm2(5 - itau, c_A, i_i + 2));
+          if (b_atmp >= 0.0) {
+            xnorm = -xnorm;
+          }
+
+          tau[itau] = (xnorm - b_atmp) / xnorm;
+          b_atmp = 1.0 / (b_atmp - xnorm);
+          lastv = (i_i - itau) + 6;
+          for (lastc = i_i + 1; lastc < lastv; lastc++) {
+            c_A[lastc] *= b_atmp;
+          }
+
+          for (lastv = 1; lastv <= i; lastv++) {
+            xnorm *= 1.0020841800044864E-292;
+          }
+
+          b_atmp = xnorm;
+        } else {
+          tau[itau] = (xnorm - c_A[i_i]) / xnorm;
+          b_atmp = 1.0 / (c_A[i_i] - xnorm);
+          i = (i_i - itau) + 6;
+          for (lastv = i_i + 1; lastv < i; lastv++) {
+            c_A[lastv] *= b_atmp;
+          }
+
+          b_atmp = xnorm;
+        }
+      }
+
+      c_A[i_i] = b_atmp;
+      b_atmp = c_A[i_i];
+      c_A[i_i] = 1.0;
+      i = ((itau + 1) * 6 + itau) + 1;
+      if (tau[itau] != 0.0) {
+        lastv = 6 - itau;
+        lastc = (i_i - itau) + 5;
+        while ((lastv > 0) && (c_A[lastc] == 0.0)) {
+          lastv--;
+          lastc--;
+        }
+
+        lastc = 5 - itau;
+        exitg2 = false;
+        while ((!exitg2) && (lastc > 0)) {
+          coltop = (lastc - 1) * 6 + i;
+          ia = coltop;
+          do {
+            exitg1 = 0;
+            if (ia <= (coltop + lastv) - 1) {
+              if (c_A[ia - 1] != 0.0) {
+                exitg1 = 1;
+              } else {
+                ia++;
+              }
+            } else {
+              lastc--;
+              exitg1 = 2;
+            }
+          } while (exitg1 == 0);
+
+          if (exitg1 == 1) {
+            exitg2 = true;
+          }
+        }
+      } else {
+        lastv = 0;
+        lastc = 0;
+      }
+
+      if (lastv > 0) {
+        Adaptive_xgemv(lastv, lastc, c_A, i, c_A, i_i + 1, work);
+        Adaptive_xger(lastv, lastc, -tau[itau], i_i + 1, work, c_A, i);
+      }
+
+      c_A[i_i] = b_atmp;
+    } else {
+      tau[5] = 0.0;
+    }
+  }
+
+  itau = 5;
+  for (i_i = 0; i_i < 6; i_i++) {
+    for (i = 0; i < i_i + 1; i++) {
+      R[i + 6 * i_i] = c_A[6 * i_i + i];
+    }
+
+    for (i = i_i + 1; i + 1 < 7; i++) {
+      R[i + 6 * i_i] = 0.0;
+    }
+
+    work[i_i] = 0.0;
+  }
+
+  for (i_i = 5; i_i >= 0; i_i--) {
+    i = (i_i * 6 + i_i) + 1;
+    if (i_i + 1 < 6) {
+      c_A[i - 1] = 1.0;
+      if (tau[itau] != 0.0) {
+        lastv = 6 - i_i;
+        lastc = (i - i_i) + 4;
+        while ((lastv > 0) && (c_A[lastc] == 0.0)) {
+          lastv--;
+          lastc--;
+        }
+
+        lastc = 5 - i_i;
+        exitg2 = false;
+        while ((!exitg2) && (lastc > 0)) {
+          coltop = (lastc - 1) * 6 + i;
+          ia = coltop;
+          do {
+            exitg1 = 0;
+            if (ia + 6 <= (coltop + lastv) + 5) {
+              if (c_A[ia + 5] != 0.0) {
+                exitg1 = 1;
+              } else {
+                ia++;
+              }
+            } else {
+              lastc--;
+              exitg1 = 2;
+            }
+          } while (exitg1 == 0);
+
+          if (exitg1 == 1) {
+            exitg2 = true;
+          }
+        }
+      } else {
+        lastv = 0;
+        lastc = 0;
+      }
+
+      if (lastv > 0) {
+        Adaptive_xgemv(lastv, lastc, c_A, i + 6, c_A, i, work);
+        Adaptive_xger(lastv, lastc, -tau[itau], i, work, c_A, i + 6);
+      }
+
+      lastv = (i - i_i) + 5;
+      for (lastc = i; lastc < lastv; lastc++) {
+        c_A[lastc] *= -tau[itau];
+      }
+    }
+
+    c_A[i - 1] = 1.0 - tau[itau];
+    for (lastv = 1; lastv <= i_i; lastv++) {
+      c_A[(i - lastv) - 1] = 0.0;
+    }
+
+    itau--;
+  }
+
+  for (itau = 0; itau < 6; itau++) {
+    for (i_i = 0; i_i < 6; i_i++) {
+      Q[i_i + 6 * itau] = c_A[6 * itau + i_i];
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static real_T Adaptive_KWIKfactor(const real_T b_Ac[480], const int16_T iC[80],
+  int16_T nA, const real_T b_Linv[36], real_T RLinv[36], real_T b_D[36], real_T
+  b_H[36], int16_T n)
+{
+  real_T Status;
+  real_T TL[36];
+  real_T QQ[36];
+  real_T RR[36];
+  int16_T i;
+  int16_T f_i;
+  int16_T d_k;
+  real_T tmp;
+  int32_T i_0;
+  int32_T i_1;
+  int32_T tmp_0;
+  int32_T i_tmp;
+  int32_T exitg1;
+  Status = 1.0;
+  memset(&RLinv[0], 0, 36U * sizeof(real_T));
+  for (i = 1; i <= nA; i++) {
+    i_tmp = i - 1;
+    for (i_1 = 0; i_1 < 6; i_1++) {
+      tmp_0 = i_1 + 6 * i_tmp;
+      RLinv[tmp_0] = 0.0;
+      for (i_0 = 0; i_0 < 6; i_0++) {
+        RLinv[tmp_0] = b_Ac[(iC[i_tmp] + 80 * i_0) - 1] * b_Linv[6 * i_0 + i_1]
+          + RLinv[6 * i_tmp + i_1];
+      }
+    }
+  }
+
+  Adaptive_qr(RLinv, QQ, RR);
+  i = 1;
+  do {
+    exitg1 = 0;
+    if (i <= nA) {
+      if (fabs(RR[((i - 1) * 6 + i) - 1]) < 1.0E-12) {
+        Status = -2.0;
+        exitg1 = 1;
+      } else {
+        i++;
+      }
+    } else {
+      for (i = 1; i <= n; i++) {
+        for (f_i = 1; f_i <= n; f_i++) {
+          tmp = 0.0;
+          for (i_1 = 0; i_1 < 6; i_1++) {
+            tmp += b_Linv[(i - 1) * 6 + i_1] * QQ[(f_i - 1) * 6 + i_1];
+          }
+
+          TL[(i + 6 * (f_i - 1)) - 1] = tmp;
+        }
+      }
+
+      memset(&RLinv[0], 0, 36U * sizeof(real_T));
+      i = nA;
+      while (i > 0) {
+        i_1 = i - 1;
+        RLinv[(i + 6 * i_1) - 1] = 1.0;
+        for (f_i = i; f_i <= nA; f_i++) {
+          tmp_0 = f_i - 1;
+          RLinv[(i + 6 * tmp_0) - 1] /= RR[((i - 1) * 6 + i) - 1];
+        }
+
+        if (i > 1) {
+          for (f_i = 1; f_i <= i_1; f_i++) {
+            for (d_k = i; d_k <= nA; d_k++) {
+              tmp_0 = d_k - 1;
+              i_0 = tmp_0 * 6;
+              RLinv[(f_i + 6 * tmp_0) - 1] = RLinv[(i_0 + f_i) - 1] - RR[(i_1 *
+                6 + f_i) - 1] * RLinv[(i_0 + i) - 1];
+            }
+          }
+        }
+
+        i = (int16_T)i_1;
+      }
+
+      for (i = 1; i <= n; i++) {
+        for (f_i = i; f_i <= n; f_i++) {
+          i_1 = f_i - 1;
+          tmp_0 = (i + 6 * i_1) - 1;
+          b_H[tmp_0] = 0.0;
+          for (d_k = (int16_T)(nA + 1); d_k <= n; d_k++) {
+            i_0 = (d_k - 1) * 6;
+            b_H[tmp_0] = b_H[((f_i - 1) * 6 + i) - 1] - TL[(i_0 + i) - 1] * TL
+              [(i_0 + f_i) - 1];
+          }
+
+          b_H[(f_i + 6 * (i - 1)) - 1] = b_H[(i_1 * 6 + i) - 1];
+        }
+      }
+
+      for (i = 1; i <= nA; i++) {
+        for (f_i = 1; f_i <= n; f_i++) {
+          i_1 = i - 1;
+          tmp_0 = (f_i + 6 * i_1) - 1;
+          b_D[tmp_0] = 0.0;
+          for (d_k = i; d_k <= nA; d_k++) {
+            i_0 = (d_k - 1) * 6;
+            b_D[tmp_0] = TL[(i_0 + f_i) - 1] * RLinv[(i_0 + i) - 1] + b_D[(i_1 *
+              6 + f_i) - 1];
+          }
+        }
+      }
+
+      exitg1 = 1;
+    }
+  } while (exitg1 == 0);
+
+  return Status;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_DropConstraint(int16_T kDrop, int16_T iA[80], int16_T *nA,
+  int16_T iC[80])
+{
+  int16_T i;
+  int32_T tmp;
+  iA[iC[kDrop - 1] - 1] = 0;
+  if (kDrop < *nA) {
+    tmp = *nA - 1;
+    if (tmp < -32768) {
+      tmp = -32768;
+    }
+
+    for (i = kDrop; i <= (int16_T)tmp; i++) {
+      iC[i - 1] = iC[i];
+    }
+  }
+
+  iC[*nA - 1] = 0;
+  tmp = *nA - 1;
+  if (tmp < -32768) {
+    tmp = -32768;
+  }
+
+  *nA = (int16_T)tmp;
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_qpkwik(const real_T b_Linv[36], const real_T b_Hinv[36],
+  const real_T f[6], const real_T b_Ac[480], const real_T b[80], int16_T iA[80],
+  int16_T b_maxiter, real_T FeasTol, real_T x[6], real_T lambda[80], real_T
+  *status)
+{
+  real_T r[6];
+  real_T rMin;
+  real_T RLinv[36];
+  real_T b_D[36];
+  real_T b_H[36];
+  real_T U[36];
+  real_T cTol[80];
+  boolean_T cTolComputed;
+  int16_T iC[80];
+  int16_T nA;
+  real_T Opt[12];
+  real_T Rhs[12];
+  boolean_T DualFeasible;
+  boolean_T ColdReset;
+  int16_T kDrop;
+  real_T Xnorm0;
+  real_T cMin;
+  int16_T kNext;
+  real_T cVal;
+  real_T AcRow[6];
+  real_T t;
+  int16_T iSave;
+  uint16_T q;
+  uint16_T b_x;
+  real_T varargin_1[80];
+  int32_T i;
+  real_T b_Ac_0[6];
+  int32_T tmp;
+  int32_T f_i_tmp;
+  int32_T U_tmp;
+  int32_T exitg1;
+  int32_T exitg2;
+  int32_T exitg3;
+  boolean_T exitg4;
+  boolean_T guard1 = false;
+  boolean_T guard2 = false;
+  *status = 1.0;
+  memset(&lambda[0], 0, 80U * sizeof(real_T));
+  for (i = 0; i < 6; i++) {
+    x[i] = 0.0;
+    r[i] = 0.0;
+  }
+
+  rMin = 0.0;
+  cTolComputed = false;
+  for (i = 0; i < 80; i++) {
+    cTol[i] = 1.0;
+    iC[i] = 0;
+  }
+
+  nA = 0;
+  for (kNext = 0; kNext < 80; kNext++) {
+    if (iA[kNext] == 1) {
+      i = nA + 1;
+      if (i > 32767) {
+        i = 32767;
+      }
+
+      nA = (int16_T)i;
+      iC[(int16_T)i - 1] = (int16_T)(kNext + 1);
+    }
+  }
+
+  guard1 = false;
+  if (nA > 0) {
+    memset(&Opt[0], 0, 12U * sizeof(real_T));
+    for (i = 0; i < 6; i++) {
+      Rhs[i] = f[i];
+      Rhs[i + 6] = 0.0;
+    }
+
+    DualFeasible = false;
+    i = 3 * nA;
+    if (i > 32767) {
+      i = 32767;
+    }
+
+    if ((int16_T)i > 50) {
+      kNext = (int16_T)i;
+    } else {
+      kNext = 50;
+    }
+
+    q = (uint16_T)(kNext / 10U);
+    b_x = (uint16_T)((uint32_T)kNext - q * 10);
+    if ((b_x > 0) && (b_x >= 5)) {
+      q++;
+    }
+
+    ColdReset = false;
+    do {
+      exitg3 = 0;
+      if ((!DualFeasible) && (nA > 0) && ((int32_T)*status <= b_maxiter)) {
+        Xnorm0 = Adaptive_KWIKfactor(b_Ac, iC, nA, b_Linv, RLinv, b_D, b_H, 6);
+        if (Xnorm0 < 0.0) {
+          if (ColdReset) {
+            *status = -2.0;
+            exitg3 = 2;
+          } else {
+            nA = 0;
+            memset(&iA[0], 0, 80U * sizeof(int16_T));
+            memset(&iC[0], 0, 80U * sizeof(int16_T));
+            ColdReset = true;
+          }
+        } else {
+          for (kNext = 1; kNext <= nA; kNext++) {
+            i = 6 + kNext;
+            if (i > 32767) {
+              i = 32767;
+            }
+
+            f_i_tmp = kNext - 1;
+            Rhs[i - 1] = b[iC[f_i_tmp] - 1];
+            for (kDrop = kNext; kDrop <= nA; kDrop++) {
+              i = (kDrop + 6 * f_i_tmp) - 1;
+              U[i] = 0.0;
+              for (iSave = 1; iSave <= nA; iSave++) {
+                U_tmp = (iSave - 1) * 6;
+                U[i] = RLinv[(U_tmp + kDrop) - 1] * RLinv[(U_tmp + kNext) - 1] +
+                  U[((kNext - 1) * 6 + kDrop) - 1];
+              }
+
+              U[(kNext + 6 * (kDrop - 1)) - 1] = U[(f_i_tmp * 6 + kDrop) - 1];
+            }
+          }
+
+          for (kNext = 0; kNext < 6; kNext++) {
+            f_i_tmp = kNext + 1;
+            cVal = 0.0;
+            for (i = 0; i < 6; i++) {
+              cVal += b_H[(6 * i + f_i_tmp) - 1] * Rhs[i];
+            }
+
+            Opt[kNext] = cVal;
+            for (kDrop = 1; kDrop <= nA; kDrop++) {
+              i = 6 + kDrop;
+              if (i > 32767) {
+                i = 32767;
+              }
+
+              Opt[kNext] += b_D[(kDrop - 1) * 6 + kNext] * Rhs[i - 1];
+            }
+          }
+
+          for (kNext = 1; kNext <= nA; kNext++) {
+            cVal = 0.0;
+            for (i = 0; i < 6; i++) {
+              cVal += b_D[(kNext - 1) * 6 + i] * Rhs[i];
+            }
+
+            i = 6 + kNext;
+            f_i_tmp = i;
+            if (i > 32767) {
+              f_i_tmp = 32767;
+            }
+
+            Opt[f_i_tmp - 1] = cVal;
+            for (kDrop = 1; kDrop <= nA; kDrop++) {
+              f_i_tmp = i;
+              if (i > 32767) {
+                f_i_tmp = 32767;
+              }
+
+              U_tmp = i;
+              if (i > 32767) {
+                U_tmp = 32767;
+              }
+
+              tmp = 6 + kDrop;
+              if (tmp > 32767) {
+                tmp = 32767;
+              }
+
+              Opt[f_i_tmp - 1] = U[((kDrop - 1) * 6 + kNext) - 1] * Rhs[tmp - 1]
+                + Opt[U_tmp - 1];
+            }
+          }
+
+          Xnorm0 = -1.0E-12;
+          kDrop = 0;
+          for (kNext = 1; kNext <= nA; kNext++) {
+            i = 6 + kNext;
+            f_i_tmp = i;
+            if (i > 32767) {
+              f_i_tmp = 32767;
+            }
+
+            lambda[iC[kNext - 1] - 1] = Opt[f_i_tmp - 1];
+            f_i_tmp = i;
+            if (i > 32767) {
+              f_i_tmp = 32767;
+            }
+
+            if ((Opt[f_i_tmp - 1] < Xnorm0) && (kNext <= nA)) {
+              kDrop = kNext;
+              if (i > 32767) {
+                i = 32767;
+              }
+
+              Xnorm0 = Opt[i - 1];
+            }
+          }
+
+          if (kDrop <= 0) {
+            DualFeasible = true;
+            for (i = 0; i < 6; i++) {
+              x[i] = Opt[i];
+            }
+          } else {
+            (*status)++;
+            if ((int32_T)*status > q) {
+              nA = 0;
+              memset(&iA[0], 0, 80U * sizeof(int16_T));
+              memset(&iC[0], 0, 80U * sizeof(int16_T));
+              ColdReset = true;
+            } else {
+              lambda[iC[kDrop - 1] - 1] = 0.0;
+              Adaptive_DropConstraint(kDrop, iA, &nA, iC);
+            }
+          }
+        }
+      } else {
+        if (nA <= 0) {
+          memset(&lambda[0], 0, 80U * sizeof(real_T));
+          Adaptive_Unconstrained(b_Hinv, f, x, 6);
+        }
+
+        exitg3 = 1;
+      }
+    } while (exitg3 == 0);
+
+    if (exitg3 == 1) {
+      guard1 = true;
+    }
+  } else {
+    Adaptive_Unconstrained(b_Hinv, f, x, 6);
+    guard1 = true;
+  }
+
+  if (guard1) {
+    Xnorm0 = Adaptive_norm(x);
+    do {
+      exitg2 = 0;
+      if ((int32_T)*status <= b_maxiter) {
+        cMin = -FeasTol;
+        kNext = 0;
+        for (kDrop = 0; kDrop < 80; kDrop++) {
+          if (!cTolComputed) {
+            f_i_tmp = kDrop + 1;
+            for (i = 0; i < 6; i++) {
+              b_Ac_0[i] = b_Ac[(80 * i + f_i_tmp) - 1] * x[i];
+            }
+
+            Adaptive_abs(b_Ac_0, AcRow);
+            if (!rtIsNaN(AcRow[0])) {
+              i = 1;
+            } else {
+              i = 0;
+              f_i_tmp = 2;
+              exitg4 = false;
+              while ((!exitg4) && (f_i_tmp < 7)) {
+                if (!rtIsNaN(AcRow[f_i_tmp - 1])) {
+                  i = f_i_tmp;
+                  exitg4 = true;
+                } else {
+                  f_i_tmp++;
+                }
+              }
+            }
+
+            if (i == 0) {
+              cVal = AcRow[0];
+            } else {
+              cVal = AcRow[i - 1];
+              while (i + 1 < 7) {
+                if (cVal < AcRow[i]) {
+                  cVal = AcRow[i];
+                }
+
+                i++;
+              }
+            }
+
+            cTol[kDrop] = fmax(cTol[kDrop], cVal);
+          }
+
+          if (iA[kDrop] == 0) {
+            f_i_tmp = kDrop + 1;
+            cVal = 0.0;
+            for (i = 0; i < 6; i++) {
+              cVal += b_Ac[(80 * i + f_i_tmp) - 1] * x[i];
+            }
+
+            cVal = (cVal - b[kDrop]) / cTol[kDrop];
+            if (cVal < cMin) {
+              cMin = cVal;
+              kNext = (int16_T)(kDrop + 1);
+            }
+          }
+        }
+
+        cTolComputed = true;
+        if (kNext <= 0) {
+          exitg2 = 1;
+        } else {
+          do {
+            exitg1 = 0;
+            if ((kNext > 0) && ((int32_T)*status <= b_maxiter)) {
+              guard2 = false;
+              if (nA == 0) {
+                for (i = 0; i < 6; i++) {
+                  AcRow[i] = 0.0;
+                  for (f_i_tmp = 0; f_i_tmp < 6; f_i_tmp++) {
+                    AcRow[i] += b_Ac[(80 * f_i_tmp + kNext) - 1] * b_Hinv[6 *
+                      f_i_tmp + i];
+                  }
+                }
+
+                guard2 = true;
+              } else {
+                cMin = Adaptive_KWIKfactor(b_Ac, iC, nA, b_Linv, RLinv, b_D, b_H,
+                  6);
+                if (cMin <= 0.0) {
+                  *status = -2.0;
+                  exitg1 = 1;
+                } else {
+                  for (i = 0; i < 6; i++) {
+                    for (f_i_tmp = 0; f_i_tmp < 6; f_i_tmp++) {
+                      U[f_i_tmp + 6 * i] = -b_H[6 * i + f_i_tmp];
+                    }
+                  }
+
+                  for (i = 0; i < 6; i++) {
+                    AcRow[i] = 0.0;
+                    for (f_i_tmp = 0; f_i_tmp < 6; f_i_tmp++) {
+                      AcRow[i] += b_Ac[(80 * f_i_tmp + kNext) - 1] * U[6 *
+                        f_i_tmp + i];
+                    }
+                  }
+
+                  for (kDrop = 1; kDrop <= nA; kDrop++) {
+                    cVal = 0.0;
+                    for (i = 0; i < 6; i++) {
+                      cVal += b_Ac[(80 * i + kNext) - 1] * b_D[(kDrop - 1) * 6 +
+                        i];
+                    }
+
+                    r[kDrop - 1] = cVal;
+                  }
+
+                  guard2 = true;
+                }
+              }
+
+              if (guard2) {
+                kDrop = 0;
+                cMin = 0.0;
+                DualFeasible = true;
+                ColdReset = true;
+                if (nA > 0) {
+                  iSave = 1;
+                  exitg4 = false;
+                  while ((!exitg4) && (iSave <= nA)) {
+                    if (r[iSave - 1] >= 1.0E-12) {
+                      ColdReset = false;
+                      exitg4 = true;
+                    } else {
+                      iSave++;
+                    }
+                  }
+                }
+
+                if (!((nA == 0) || ColdReset)) {
+                  for (iSave = 1; iSave <= nA; iSave++) {
+                    i = iSave - 1;
+                    if (r[i] > 1.0E-12) {
+                      cVal = lambda[iC[i] - 1] / r[iSave - 1];
+                      if ((kDrop == 0) || (cVal < rMin)) {
+                        rMin = cVal;
+                        kDrop = iSave;
+                      }
+                    }
+                  }
+
+                  if (kDrop > 0) {
+                    cMin = rMin;
+                    DualFeasible = false;
+                  }
+                }
+
+                cVal = 0.0;
+                for (i = 0; i < 6; i++) {
+                  cVal += b_Ac[(80 * i + kNext) - 1] * AcRow[i];
+                }
+
+                if (cVal <= 0.0) {
+                  cVal = 0.0;
+                  ColdReset = true;
+                } else {
+                  t = 0.0;
+                  for (i = 0; i < 6; i++) {
+                    t += b_Ac[(80 * i + kNext) - 1] * x[i];
+                  }
+
+                  cVal = (b[kNext - 1] - t) / cVal;
+                  ColdReset = false;
+                }
+
+                if (DualFeasible && ColdReset) {
+                  *status = -1.0;
+                  exitg1 = 1;
+                } else {
+                  if (ColdReset) {
+                    t = cMin;
+                  } else if (DualFeasible) {
+                    t = cVal;
+                  } else {
+                    t = fmin(cMin, cVal);
+                  }
+
+                  for (iSave = 1; iSave <= nA; iSave++) {
+                    i = iSave - 1;
+                    f_i_tmp = iC[i] - 1;
+                    lambda[f_i_tmp] -= r[i] * t;
+                    if ((iC[iSave - 1] <= 80) && (lambda[iC[iSave - 1] - 1] <
+                         0.0)) {
+                      lambda[f_i_tmp] = 0.0;
+                    }
+                  }
+
+                  lambda[kNext - 1] += t;
+                  if (t == cMin) {
+                    Adaptive_DropConstraint(kDrop, iA, &nA, iC);
+                  }
+
+                  if (!ColdReset) {
+                    for (i = 0; i < 6; i++) {
+                      x[i] += t * AcRow[i];
+                    }
+
+                    if (t == cVal) {
+                      if (nA == 6) {
+                        *status = -1.0;
+                        exitg1 = 1;
+                      } else {
+                        i = nA + 1;
+                        if (i > 32767) {
+                          i = 32767;
+                        }
+
+                        nA = (int16_T)i;
+                        iC[(int16_T)i - 1] = kNext;
+                        kDrop = (int16_T)i;
+                        exitg4 = false;
+                        while ((!exitg4) && (kDrop > 1)) {
+                          i = kDrop - 1;
+                          f_i_tmp = kDrop - 2;
+                          if (iC[i] > iC[f_i_tmp]) {
+                            exitg4 = true;
+                          } else {
+                            iSave = iC[kDrop - 1];
+                            iC[i] = iC[kDrop - 2];
+                            iC[f_i_tmp] = iSave;
+                            kDrop = (int16_T)i;
+                          }
+                        }
+
+                        iA[kNext - 1] = 1;
+                        kNext = 0;
+                        (*status)++;
+                      }
+                    } else {
+                      (*status)++;
+                    }
+                  } else {
+                    (*status)++;
+                  }
+                }
+              }
+            } else {
+              cMin = Adaptive_norm(x);
+              if (fabs(cMin - Xnorm0) > 0.001) {
+                Xnorm0 = cMin;
+                Adaptive_abs_o(b, varargin_1);
+                for (i = 0; i < 80; i++) {
+                  cTol[i] = fmax(varargin_1[i], 1.0);
+                }
+
+                cTolComputed = false;
+              }
+
+              exitg1 = 2;
+            }
+          } while (exitg1 == 0);
+
+          if (exitg1 == 1) {
+            exitg2 = 1;
+          }
+        }
+      } else {
+        *status = 0.0;
+        exitg2 = 1;
+      }
+    } while (exitg2 == 0);
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpc_solveQP(const real_T xQP[5], const real_T b_Kx[25],
+  const real_T b_Kr[150], const real_T rseq[30], const real_T b_Ku1[5], real_T
+  old_u, const real_T b_Kv[80], const real_T vseq[16], const real_T b_Kut[75],
+  const real_T b_utarget[15], const real_T b_Linv[36], const real_T b_Hinv[36],
+  const real_T b_Ac[480], const real_T Bc[80], boolean_T iA[80], real_T zopt[6],
+  real_T f[6], real_T *status)
+{
+  real_T unusedU0[80];
+  int16_T iAnew[80];
+  int32_T i;
+  real_T tmp;
+  int32_T i_0;
+  real_T tmp_0;
+  real_T tmp_1;
+  real_T tmp_2;
+  for (i = 0; i < 6; i++) {
+    f[i] = 0.0;
+  }
+
+  for (i = 0; i < 5; i++) {
+    tmp = 0.0;
+    for (i_0 = 0; i_0 < 5; i_0++) {
+      tmp += b_Kx[5 * i + i_0] * xQP[i_0];
+    }
+
+    tmp_0 = 0.0;
+    for (i_0 = 0; i_0 < 30; i_0++) {
+      tmp_0 += b_Kr[30 * i + i_0] * rseq[i_0];
+    }
+
+    tmp_1 = 0.0;
+    for (i_0 = 0; i_0 < 16; i_0++) {
+      tmp_1 += b_Kv[(i << 4) + i_0] * vseq[i_0];
+    }
+
+    tmp_2 = 0.0;
+    for (i_0 = 0; i_0 < 15; i_0++) {
+      tmp_2 += b_Kut[15 * i + i_0] * b_utarget[i_0];
+    }
+
+    f[i] = (((tmp + tmp_0) + b_Ku1[i] * old_u) + tmp_1) + tmp_2;
+  }
+
+  for (i = 0; i < 80; i++) {
+    iAnew[i] = iA[i];
+  }
+
+  Adaptive_qpkwik(b_Linv, b_Hinv, f, b_Ac, Bc, iAnew, 344, 1.0E-6, zopt,
+                  unusedU0, status);
+  for (i = 0; i < 80; i++) {
+    iA[i] = (iAnew[i] != 0);
+  }
+
+  if ((*status < 0.0) || (*status == 0.0)) {
+    for (i = 0; i < 6; i++) {
+      zopt[i] = 0.0;
+    }
+  }
+}
+
+/* Function for jcsimotwo Function: '<S2>/optimizer' */
+static void Adaptive_mpcblock_optimizer(const real_T rseq[30], const real_T
+  vseq[16], const real_T x[5], real_T old_u, const boolean_T iA[80], real_T b_ny,
+  const real_T b_Mlim[80], real_T b_Mx[400], real_T b_Mu1[80], real_T b_Mv[1280],
+  const real_T b_utarget[15], real_T b_uoff, real_T b_H[36], real_T b_Ac[480],
+  const real_T b_Wy[2], const real_T b_Jm[75], const real_T b_I1[15], const
+  real_T b_A[25], const real_T Bu[80], const real_T Bv[80], const real_T b_C[10],
+  const real_T Dv[32], const real_T b_Mrows[80], real_T *u, real_T useq[15],
+  real_T *status, boolean_T iAout[80])
+{
+  real_T c_Linv[36];
+  real_T pny;
+  real_T ix;
+  real_T c_SuJm[150];
+  real_T c_Sx[150];
+  real_T c_Su1[30];
+  real_T c_Hv[480];
+  real_T b[25];
+  real_T c_Ku1[5];
+  real_T c_Kut[75];
+  real_T c_Kx[25];
+  real_T c_Kv[80];
+  real_T c_Kr[150];
+  real_T d_Linv[36];
+  real_T zopt[6];
+  real_T f[6];
+  int32_T i;
+  static const real_T c[225] = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
+
+  real_T b_Mlim_0[80];
+  real_T tmp[36];
+  real_T tmp_0[225];
+  real_T tmp_1[75];
+  int32_T i_0;
+  real_T b_Mv_0[80];
+  int32_T ix_0;
+  int32_T c_Linv_tmp;
+  int32_T b_Ac_tmp;
+  boolean_T exitg1;
+  memset(&useq[0], 0, 15U * sizeof(real_T));
+  memset(&iAout[0], 0, 80U * sizeof(boolean_T));
+  pny = Adaptive_p * b_ny;
+  Adaptive_mpc_constraintcoef(b_A, Bu, Bv, b_C, Dv, b_Jm, c_SuJm, c_Sx, c_Su1,
+    c_Hv);
+  if (b_Mrows[0] > 0.0) {
+    i = 0;
+    exitg1 = false;
+    while ((!exitg1) && (i < 80)) {
+      if (b_Mrows[i] <= pny) {
+        c_Linv_tmp = (int32_T)b_Mrows[i];
+        ix_0 = (int32_T)b_Mrows[i];
+        for (i_0 = 0; i_0 < 5; i_0++) {
+          b_Ac_tmp = i + 80 * i_0;
+          b_Ac[b_Ac_tmp] = -c_SuJm[(30 * i_0 + c_Linv_tmp) - 1];
+          b_Mx[b_Ac_tmp] = -c_Sx[(30 * i_0 + ix_0) - 1];
+        }
+
+        b_Mu1[i] = -c_Su1[(int32_T)b_Mrows[i] - 1];
+        c_Linv_tmp = (int32_T)b_Mrows[i];
+        for (i_0 = 0; i_0 < 16; i_0++) {
+          b_Mv[i + 80 * i_0] = -c_Hv[(30 * i_0 + c_Linv_tmp) - 1];
+        }
+
+        i++;
+      } else if (b_Mrows[i] <= 2.0 * pny) {
+        ix = b_Mrows[i] - pny;
+        c_Linv_tmp = (int32_T)ix;
+        ix_0 = (int32_T)ix;
+        for (i_0 = 0; i_0 < 5; i_0++) {
+          b_Ac_tmp = i + 80 * i_0;
+          b_Ac[b_Ac_tmp] = c_SuJm[(30 * i_0 + c_Linv_tmp) - 1];
+          b_Mx[b_Ac_tmp] = c_Sx[(30 * i_0 + ix_0) - 1];
+        }
+
+        b_Mu1[i] = c_Su1[(int32_T)ix - 1];
+        c_Linv_tmp = (int32_T)ix;
+        for (i_0 = 0; i_0 < 16; i_0++) {
+          b_Mv[i + 80 * i_0] = c_Hv[(30 * i_0 + c_Linv_tmp) - 1];
+        }
+
+        i++;
+      } else {
+        exitg1 = true;
+      }
+    }
+  }
+
+  Adaptive_kron(c, 1.0, tmp_0);
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i = 0; i < 15; i++) {
+      b_Ac_tmp = i + 15 * i_0;
+      tmp_1[b_Ac_tmp] = 0.0;
+      for (c_Linv_tmp = 0; c_Linv_tmp < 15; c_Linv_tmp++) {
+        tmp_1[b_Ac_tmp] = tmp_0[15 * c_Linv_tmp + i] * b_Jm[15 * i_0 +
+          c_Linv_tmp] + tmp_1[15 * i_0 + i];
+      }
+    }
+  }
+
+  Adaptive_mpc_calculatehessian(b_Wy, Adaptive_Wu, Adaptive_Wdu, c_SuJm, tmp_1,
+    b_Jm, b_I1, c_Su1, c_Sx, c_Hv, b, c_Ku1, c_Kut, c_Kx, c_Kv, c_Kr);
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i = 0; i < 5; i++) {
+      b_H[i + 6 * i_0] = b[5 * i_0 + i];
+    }
+  }
+
+  memcpy(&c_Linv[0], &b_H[0], 36U * sizeof(real_T));
+  Adaptive_mpc_checkhessian(c_Linv, d_Linv, &pny);
+  if (pny > 1.0) {
+    *u = old_u + b_uoff;
+    for (i = 0; i < 15; i++) {
+      useq[i] = *u;
+    }
+
+    *status = -2.0;
+  } else {
+    Adaptive_eye_g(tmp);
+    Adaptive_linsolve(d_Linv, tmp, c_Linv);
+    memcpy(&iAout[0], &iA[0], 80U * sizeof(boolean_T));
+    for (i_0 = 0; i_0 < 6; i_0++) {
+      for (i = 0; i < 6; i++) {
+        c_Linv_tmp = i_0 + 6 * i;
+        d_Linv[c_Linv_tmp] = 0.0;
+        for (b_Ac_tmp = 0; b_Ac_tmp < 6; b_Ac_tmp++) {
+          d_Linv[c_Linv_tmp] = c_Linv[6 * i_0 + b_Ac_tmp] * c_Linv[6 * i +
+            b_Ac_tmp] + d_Linv[6 * i + i_0];
+        }
+      }
+    }
+
+    for (i_0 = 0; i_0 < 80; i_0++) {
+      pny = 0.0;
+      for (i = 0; i < 5; i++) {
+        pny += b_Mx[80 * i + i_0] * x[i];
+      }
+
+      b_Mv_0[i_0] = 0.0;
+      for (i = 0; i < 16; i++) {
+        b_Mv_0[i_0] += b_Mv[80 * i + i_0] * vseq[i];
+      }
+
+      b_Mlim_0[i_0] = -(((b_Mlim[i_0] + pny) + b_Mu1[i_0] * old_u) + b_Mv_0[i_0]);
+    }
+
+    Adaptive_mpc_solveQP(x, c_Kx, c_Kr, rseq, c_Ku1, old_u, c_Kv, vseq, c_Kut,
+                         b_utarget, c_Linv, d_Linv, b_Ac, b_Mlim_0, iAout, zopt,
+                         f, status);
+    *u = (old_u + zopt[0]) + b_uoff;
+  }
+}
+
+/* Model step function */
+void Adaptive_step(void)
+{
+  real_T xk[5];
+  real_T ym[2];
+  real_T bi[4];
+  real_T di[2];
+  real_T Bu[80];
+  real_T Bv[80];
+  real_T Dv[32];
+  real_T Dvm[32];
+  real_T Cm[160];
+  real_T L[10];
+  real_T Qk[25];
+  real_T Rk[4];
+  real_T Nk[10];
+  real_T b_Mlim[80];
+  real_T b_utarget[15];
+  real_T b_uoff;
+  real_T b_myoff[2];
+  real_T b_xoff[5];
+  real_T rseq[30];
+  real_T vseq[16];
+  real_T v;
+  real_T u;
+  real_T status;
+  real_T b_A[25];
+  real_T b_C[10];
+  static const real_T d[25] = { 0.59029522013726732, 0.0050186685703353332,
+    0.083693736924718917, 0.081595384470467269, 0.0, 0.0, 1.0, 0.0, 1.5, 0.0,
+    -0.74954881953164754, 0.076034046986390588, 0.54309372380774534,
+    0.01780173334859092, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
+
+  static const real_T e[25] = { 1.1898718909245078, 0.070741975047093661,
+    1.3270514387018262, 0.11400709822746803, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+
+  static const int8_T f[10] = { 0, 0, 0, 1, 0, 0, 1, 0, 0, 1 };
+
+  static const real_T g[10] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0
+  };
+
+  static const real_T h[80] = { 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2,
+    6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0, 0.2, 6.0,
+    0.2, 6.0, 0.2, 6.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2,
+    2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0, 0.2, 2.0,
+    0.2, 2.0, 0.2, 2.0, 0.2, 0.523598775598299, 0.523598775598299,
+    0.523598775598299, 0.523598775598299, 0.523598775598299, 0.523598775598299,
+    0.523598775598299, 0.523598775598299, 0.523598775598299, 0.523598775598299,
+    0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14, 0.14 };
+
+  static const real_T i[80] = { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+    10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0,
+    23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0,
+    36.0, 37.0, 38.0, 39.0, 40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0,
+    49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0, 57.0, 58.0, 59.0, 60.0, 61.0,
+    62.0, 63.0, 64.0, 65.0, 76.0, 77.0, 78.0, 79.0, 80.0, 91.0, 92.0, 93.0, 94.0,
+    95.0, 96.0, 97.0, 98.0, 99.0, 100.0 };
+
+  static const real_T n[400] = { -0.081595384470467269, -0.0050186685703353332,
+    -0.13877864635183068, -0.014344738164658104, -0.1852974816530992,
+    -0.022991055476267938, -0.22908698395518828, -0.029215843983904602,
+    -0.273870958902729, -0.032956659919392062, -0.3208282610848785,
+    -0.034810384796619513, -0.36986758889077953, -0.035477453355279485,
+    -0.42043358569917355, -0.035522935055108042, -0.47193181402205919,
+    -0.035318784011032167, -0.52390142326696321, -0.035069967512791109,
+    -0.576047949158219, -0.034866216449429215, -0.62821430154759439,
+    -0.034730663131909326, -0.68033530970544276, -0.034655129985457139,
+    -0.73239732535561108, -0.034621481602106735, -0.78440986081769182,
+    -0.034612298123981, 0.081595384470467269, 0.0050186685703353332,
+    0.13877864635183068, 0.014344738164658104, 0.1852974816530992,
+    0.022991055476267938, 0.22908698395518828, 0.029215843983904602,
+    0.273870958902729, 0.032956659919392062, 0.3208282610848785,
+    0.034810384796619513, 0.36986758889077953, 0.035477453355279485,
+    0.42043358569917355, 0.035522935055108042, 0.47193181402205919,
+    0.035318784011032167, 0.52390142326696321, 0.035069967512791109,
+    0.576047949158219, 0.034866216449429215, 0.62821430154759439,
+    0.034730663131909326, 0.68033530970544276, 0.034655129985457139,
+    0.73239732535561108, 0.034621481602106735, 0.78440986081769182,
+    0.034612298123981, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.5, -1.0, -3.0, -1.0, -4.5,
+    -1.0, -6.0, -1.0, -7.5, -1.0, -9.0, -1.0, -10.5, -1.0, -12.0, -1.0, -13.5,
+    -1.0, -15.0, -1.0, -16.5, -1.0, -18.0, -1.0, -19.5, -1.0, -21.0, -1.0, -22.5,
+    -1.0, 1.5, 1.0, 3.0, 1.0, 4.5, 1.0, 6.0, 1.0, 7.5, 1.0, 9.0, 1.0, 10.5, 1.0,
+    12.0, 1.0, 13.5, 1.0, 15.0, 1.0, 16.5, 1.0, 18.0, 1.0, 19.5, 1.0, 21.0, 1.0,
+    22.5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.01780173334859092,
+    -0.076034046986390588, -0.080361089373625891, -0.1135659235978871,
+    -0.18552610703571751, -0.12695890577302293, -0.32182350048566311,
+    -0.127751713401195, -0.47707446016086008, -0.12351649937050896,
+    -0.6418735768993109, -0.11841245704293105, -0.81022922294958832,
+    -0.11425102639531212, -0.97895581789913932, -0.11149097907783884,
+    -1.1467395599191053, -0.10995792394788989, -1.3133124913993224,
+    -0.10927835250265658, -1.4788745162610331, -0.109095781628408,
+    -1.6437549164194487, -0.10914934990147472, -1.8082502695512512,
+    -0.1092800463235031, -1.9725704937747432, -0.1094076425107896,
+    -2.1368398243517674, -0.10950216030530614, 0.01780173334859092,
+    0.076034046986390588, 0.080361089373625891, 0.1135659235978871,
+    0.18552610703571751, 0.12695890577302293, 0.32182350048566311,
+    0.127751713401195, 0.47707446016086008, 0.12351649937050896,
+    0.6418735768993109, 0.11841245704293105, 0.81022922294958832,
+    0.11425102639531212, 0.97895581789913932, 0.11149097907783884,
+    1.1467395599191053, 0.10995792394788989, 1.3133124913993224,
+    0.10927835250265658, 1.4788745162610331, 0.109095781628408,
+    1.6437549164194487, 0.10914934990147472, 1.8082502695512512,
+    0.1092800463235031, 1.9725704937747432, 0.1094076425107896,
+    2.1368398243517674, 0.10950216030530614, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -0.0,
+    -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0,
+    -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0,
+    -1.0, -0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+    0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0,
+    -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0,
+    -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, -0.0, -1.0, 0.0, 1.0, 0.0,
+    1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+    0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0 };
+
+  static const real_T o[80] = { -0.11400709822746803, -0.070741975047093661,
+    -0.45483902928779751, -0.2483566141995075, -1.0528441622800591,
+    -0.4868748122694776, -1.9518731003560688, -0.75345419653256807,
+    -3.1899925509786082, -1.0284923781714248, -4.7935381665225432,
+    -1.3023613046684086, -6.7777668235418584, -1.5716625995763054,
+    -9.1498755631424835, -1.8362351880834908, -11.912173194127698,
+    -2.0971991692233156, -15.06451773823574, -2.3558857937584836,
+    -18.605863270506866, -2.613374532272299, -22.535078774003125,
+    -2.8703785521817373, -26.851283288674164, -3.1272923688627792,
+    -31.553911883482836, -3.3842897516509103, -36.642661959832751,
+    -3.6414164238774291, 0.11400709822746803, 0.070741975047093661,
+    0.45483902928779751, 0.2483566141995075, 1.0528441622800591,
+    0.4868748122694776, 1.9518731003560688, 0.75345419653256807,
+    3.1899925509786082, 1.0284923781714248, 4.7935381665225432,
+    1.3023613046684086, 6.7777668235418584, 1.5716625995763054,
+    9.1498755631424835, 1.8362351880834908, 11.912173194127698,
+    2.0971991692233156, 15.06451773823574, 2.3558857937584836,
+    18.605863270506866, 2.613374532272299, 22.535078774003125,
+    2.8703785521817373, 26.851283288674164, 3.1272923688627792,
+    31.553911883482836, 3.3842897516509103, 36.642661959832751,
+    3.6414164238774291, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+
+  static const real_T q[36] = { 35626.3978175615, 29743.203819585593,
+    24445.720316084546, 19729.735358524347, 15588.164297192967, 0.0,
+    29743.203819585597, 24877.858685139119, 20487.295721858212,
+    16569.19183546053, 13119.246337043309, 0.0, 24445.720316084546,
+    20487.295721858212, 16907.297587083693, 13704.557995154675,
+    10876.67743614949, 0.0, 19729.735358524347, 16569.19183546053,
+    13704.557995154675, 11135.361390593202, 8860.3690790196815, 0.0,
+    15588.164297192967, 13119.246337043309, 10876.67743614949,
+    8860.3690790196815, 7069.7942460060758, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    100000.0 };
+
+  static const real_T s[480] = { -0.11400709822746803, -0.070741975047093661,
+    -0.45483902928779751, -0.2483566141995075, -1.0528441622800591,
+    -0.4868748122694776, -1.9518731003560688, -0.75345419653256807,
+    -3.1899925509786082, -1.0284923781714248, -4.7935381665225432,
+    -1.3023613046684086, -6.7777668235418584, -1.5716625995763054,
+    -9.1498755631424835, -1.8362351880834908, -11.912173194127698,
+    -2.0971991692233156, -15.06451773823574, -2.3558857937584836,
+    -18.605863270506866, -2.613374532272299, -22.535078774003125,
+    -2.8703785521817373, -26.851283288674164, -3.1272923688627792,
+    -31.553911883482836, -3.3842897516509103, -36.642661959832751,
+    -3.6414164238774291, 0.11400709822746803, 0.070741975047093661,
+    0.45483902928779751, 0.2483566141995075, 1.0528441622800591,
+    0.4868748122694776, 1.9518731003560688, 0.75345419653256807,
+    3.1899925509786082, 1.0284923781714248, 4.7935381665225432,
+    1.3023613046684086, 6.7777668235418584, 1.5716625995763054,
+    9.1498755631424835, 1.8362351880834908, 11.912173194127698,
+    2.0971991692233156, 15.06451773823574, 2.3558857937584836,
+    18.605863270506866, 2.613374532272299, 22.535078774003125,
+    2.8703785521817373, 26.851283288674164, 3.1272923688627792,
+    31.553911883482836, 3.3842897516509103, 36.642661959832751,
+    3.6414164238774291, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    -1.0, -0.0, -0.0, -0.0, -0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -0.0, -0.0,
+    -0.11400709822746803, -0.070741975047093661, -0.45483902928779751,
+    -0.2483566141995075, -1.0528441622800591, -0.4868748122694776,
+    -1.9518731003560688, -0.75345419653256807, -3.1899925509786082,
+    -1.0284923781714248, -4.7935381665225432, -1.3023613046684086,
+    -6.7777668235418584, -1.5716625995763054, -9.1498755631424835,
+    -1.8362351880834908, -11.912173194127698, -2.0971991692233156,
+    -15.06451773823574, -2.3558857937584836, -18.605863270506866,
+    -2.613374532272299, -22.535078774003125, -2.8703785521817373,
+    -26.851283288674164, -3.1272923688627792, -31.553911883482836,
+    -3.3842897516509103, 0.0, 0.0, 0.11400709822746803, 0.070741975047093661,
+    0.45483902928779751, 0.2483566141995075, 1.0528441622800591,
+    0.4868748122694776, 1.9518731003560688, 0.75345419653256807,
+    3.1899925509786082, 1.0284923781714248, 4.7935381665225432,
+    1.3023613046684086, 6.7777668235418584, 1.5716625995763054,
+    9.1498755631424835, 1.8362351880834908, 11.912173194127698,
+    2.0971991692233156, 15.06451773823574, 2.3558857937584836,
+    18.605863270506866, 2.613374532272299, 22.535078774003125,
+    2.8703785521817373, 26.851283288674164, 3.1272923688627792,
+    31.553911883482836, 3.3842897516509103, -0.0, -1.0, -1.0, -1.0, -1.0, 0.0,
+    1.0, 1.0, 1.0, 1.0, -0.0, -1.0, -0.0, -0.0, -0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    -0.0, -0.0, -0.0, -0.0, -0.11400709822746803, -0.070741975047093661,
+    -0.45483902928779751, -0.2483566141995075, -1.0528441622800591,
+    -0.4868748122694776, -1.9518731003560688, -0.75345419653256807,
+    -3.1899925509786082, -1.0284923781714248, -4.7935381665225432,
+    -1.3023613046684086, -6.7777668235418584, -1.5716625995763054,
+    -9.1498755631424835, -1.8362351880834908, -11.912173194127698,
+    -2.0971991692233156, -15.06451773823574, -2.3558857937584836,
+    -18.605863270506866, -2.613374532272299, -22.535078774003125,
+    -2.8703785521817373, -26.851283288674164, -3.1272923688627792, 0.0, 0.0, 0.0,
+    0.0, 0.11400709822746803, 0.070741975047093661, 0.45483902928779751,
+    0.2483566141995075, 1.0528441622800591, 0.4868748122694776,
+    1.9518731003560688, 0.75345419653256807, 3.1899925509786082,
+    1.0284923781714248, 4.7935381665225432, 1.3023613046684086,
+    6.7777668235418584, 1.5716625995763054, 9.1498755631424835,
+    1.8362351880834908, 11.912173194127698, 2.0971991692233156,
+    15.06451773823574, 2.3558857937584836, 18.605863270506866, 2.613374532272299,
+    22.535078774003125, 2.8703785521817373, 26.851283288674164,
+    3.1272923688627792, -0.0, -0.0, -1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+    -0.0, -0.0, -1.0, -0.0, -0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.0, -0.0, -0.0,
+    -0.0, -0.0, -0.0, -0.11400709822746803, -0.070741975047093661,
+    -0.45483902928779751, -0.2483566141995075, -1.0528441622800591,
+    -0.4868748122694776, -1.9518731003560688, -0.75345419653256807,
+    -3.1899925509786082, -1.0284923781714248, -4.7935381665225432,
+    -1.3023613046684086, -6.7777668235418584, -1.5716625995763054,
+    -9.1498755631424835, -1.8362351880834908, -11.912173194127698,
+    -2.0971991692233156, -15.06451773823574, -2.3558857937584836,
+    -18.605863270506866, -2.613374532272299, -22.535078774003125,
+    -2.8703785521817373, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.11400709822746803,
+    0.070741975047093661, 0.45483902928779751, 0.2483566141995075,
+    1.0528441622800591, 0.4868748122694776, 1.9518731003560688,
+    0.75345419653256807, 3.1899925509786082, 1.0284923781714248,
+    4.7935381665225432, 1.3023613046684086, 6.7777668235418584,
+    1.5716625995763054, 9.1498755631424835, 1.8362351880834908,
+    11.912173194127698, 2.0971991692233156, 15.06451773823574,
+    2.3558857937584836, 18.605863270506866, 2.613374532272299,
+    22.535078774003125, 2.8703785521817373, -0.0, -0.0, -0.0, -1.0, -1.0, 0.0,
+    0.0, 0.0, 1.0, 1.0, -0.0, -0.0, -0.0, -1.0, -0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.0, -0.11400709822746803,
+    -0.070741975047093661, -0.45483902928779751, -0.2483566141995075,
+    -1.0528441622800591, -0.4868748122694776, -1.9518731003560688,
+    -0.75345419653256807, -3.1899925509786082, -1.0284923781714248,
+    -4.7935381665225432, -1.3023613046684086, -6.7777668235418584,
+    -1.5716625995763054, -9.1498755631424835, -1.8362351880834908,
+    -11.912173194127698, -2.0971991692233156, -15.06451773823574,
+    -2.3558857937584836, -18.605863270506866, -2.613374532272299, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.11400709822746803, 0.070741975047093661,
+    0.45483902928779751, 0.2483566141995075, 1.0528441622800591,
+    0.4868748122694776, 1.9518731003560688, 0.75345419653256807,
+    3.1899925509786082, 1.0284923781714248, 4.7935381665225432,
+    1.3023613046684086, 6.7777668235418584, 1.5716625995763054,
+    9.1498755631424835, 1.8362351880834908, 11.912173194127698,
+    2.0971991692233156, 15.06451773823574, 2.3558857937584836,
+    18.605863270506866, 2.613374532272299, -0.0, -0.0, -0.0, -0.0, -1.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, -0.0, -0.0, -0.0, -0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0 };
+
+  static const real_T t[2] = { 8.0044689142963534, 0.080044689142963546 };
+
+  static const real_T w[75] = { 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0 };
+
+  real_T rtb_xest[5];
+  real_T rtb_useq[15];
+  int32_T i_0;
+  boolean_T tmp[80];
+  real_T tmp_0[75];
+  real_T n_0[400];
+  real_T o_0[80];
+  real_T q_0[36];
+  real_T s_0[480];
+  real_T tmp_1[15];
+  real_T tmp_2[4];
+  real_T Cm_0[4];
+  real_T tmp_3[2];
+  real_T tmp_4[8];
+  real_T e_0[25];
+  real_T tmp_5[2];
+  real_T tmp_6[2];
+  real_T Cm_1[10];
+  int32_T i_1;
+  real_T b_A_0[25];
+  real_T tmp_7[10];
+  real_T b_A_1[25];
+  real_T b_A_2[25];
+  int32_T b_A_tmp;
+  int32_T b_A_tmp_0;
+  int32_T Pk1_tmp;
+
+  /* jcsimotwo Function: '<S2>/optimizer' incorporates:
+   *  Inport: '<Root>/A'
+   *  Inport: '<Root>/B'
+   *  Inport: '<Root>/C'
+   *  Inport: '<Root>/DX'
+   *  Inport: '<Root>/U'
+   *  Inport: '<Root>/X'
+   *  Inport: '<Root>/Y'
+   *  Inport: '<Root>/mo or x'
+   *  Inport: '<Root>/ref'
+   *  Memory: '<S2>/LastPcov'
+   *  Memory: '<S2>/last_x'
+   */
+  bi[0] = Adaptive_U.B[0];
+  bi[1] = Adaptive_U.B[1];
+  bi[2] = Adaptive_U.B[2];
+  bi[3] = Adaptive_U.B[3];
+  memset(&Bu[0], 0, 80U * sizeof(real_T));
+  memset(&Bv[0], 0, 80U * sizeof(real_T));
+  memset(&Dv[0], 0, sizeof(real_T) << 5U);
+  memset(&Dvm[0], 0, sizeof(real_T) << 5U);
+  memset(&Cm[0], 0, 160U * sizeof(real_T));
+  memcpy(&b_A[0], &d[0], 25U * sizeof(real_T));
+  for (i_0 = 0; i_0 < 10; i_0++) {
+    b_C[i_0] = f[i_0];
+  }
+
+  memcpy(&tmp_4[0], &Adaptive_U.C[0], sizeof(real_T) << 3U);
+  memcpy(&e_0[0], &e[0], 25U * sizeof(real_T));
+  tmp_5[0] = 1.0;
+  tmp_6[0] = 1.0;
+  tmp_5[1] = 2.0;
+  tmp_6[1] = 1.0;
+  Adaptive_mpc_plantupdate(Adaptive_U.A, bi, tmp_4, b_A, e_0, b_C, g, tmp_5,
+    Adaptive_Uscale, tmp_6, &Bu[0], &Bv[0], L, &Dv[0], &Dvm[0], Qk, Rk, Nk);
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    Cm[i_0 << 1] = L[i_0 << 1];
+    Cm[1 + (i_0 << 1)] = L[(i_0 << 1) + 1];
+  }
+
+  memcpy(&b_Mlim[0], &h[0], 80U * sizeof(real_T));
+  memset(&b_utarget[0], 0, 15U * sizeof(real_T));
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    b_xoff[i_0] = 0.0;
+  }
+
+  tmp_5[0] = 1.0;
+  tmp_6[0] = 0.0;
+  tmp_3[0] = 1.0;
+  tmp_5[1] = 1.0;
+  tmp_6[1] = 0.0;
+  tmp_3[1] = 2.0;
+  Adaptive_mpc_updateFromNominal(b_Mlim, i, Adaptive_U.U, b_utarget,
+    Adaptive_U.Y, tmp_5, tmp_6, tmp_3, Adaptive_U.X, b_xoff, Adaptive_U.DX, Bv,
+    &b_uoff, di, b_myoff);
+  tmp_5[0] = 1.0;
+  tmp_5[1] = 1.0;
+  Adaptive_mpcblock_refmd(Adaptive_U.ref, di, tmp_5, rseq, vseq, &v);
+  Adaptive_eye(tmp_2);
+  for (i_0 = 0; i_0 < 2; i_0++) {
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      Cm_1[i_0 + (i_1 << 1)] = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        Cm_1[i_0 + (i_1 << 1)] += Cm[(Pk1_tmp << 1) + i_0] *
+          Adaptive_DW.LastPcov_PreviousInput[5 * i_1 + Pk1_tmp];
+      }
+    }
+
+    for (i_1 = 0; i_1 < 2; i_1++) {
+      status = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        status += Cm_1[(Pk1_tmp << 1) + i_0] * Cm[(Pk1_tmp << 1) + i_1];
+      }
+
+      Cm_0[i_0 + (i_1 << 1)] = Rk[(i_1 << 1) + i_0] + status;
+    }
+  }
+
+  Adaptive_mrdivide(tmp_2, Cm_0, bi);
+  ym[0] = Adaptive_U.LateralpositionYawangle[0] - b_myoff[0];
+  ym[1] = Adaptive_U.LateralpositionYawangle[1] - b_myoff[1];
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      b_A_tmp = i_0 + 5 * i_1;
+      b_A_0[b_A_tmp] = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        b_A_0[b_A_tmp] = b_A[5 * Pk1_tmp + i_0] *
+          Adaptive_DW.LastPcov_PreviousInput[5 * i_1 + Pk1_tmp] + b_A_0[5 * i_1
+          + i_0];
+      }
+    }
+
+    for (i_1 = 0; i_1 < 2; i_1++) {
+      status = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        status += b_A_0[5 * Pk1_tmp + i_0] * Cm[(Pk1_tmp << 1) + i_1];
+      }
+
+      Cm_1[i_0 + 5 * i_1] = Nk[5 * i_1 + i_0] + status;
+    }
+
+    L[i_0] = 0.0;
+    L[i_0] += Cm_1[i_0] * bi[0];
+    L[i_0] += Cm_1[i_0 + 5] * bi[1];
+    L[i_0 + 5] = 0.0;
+    L[i_0 + 5] += Cm_1[i_0] * bi[2];
+    L[i_0 + 5] += Cm_1[i_0 + 5] * bi[3];
+    xk[i_0] = (Adaptive_DW.last_x_PreviousInput[i_0] - b_xoff[i_0]) + Bu[i_0] *
+      0.0;
+  }
+
+  for (i_0 = 0; i_0 < 2; i_0++) {
+    status = 0.0;
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      status += Cm[(i_1 << 1) + i_0] * xk[i_1];
+    }
+
+    di[i_0] = ym[i_0] - (Dvm[i_0] * v + status);
+  }
+
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i_1 = 0; i_1 < 2; i_1++) {
+      Pk1_tmp = i_0 + 5 * i_1;
+      Cm_1[Pk1_tmp] = 0.0;
+      for (b_A_tmp = 0; b_A_tmp < 5; b_A_tmp++) {
+        Cm_1[Pk1_tmp] = Adaptive_DW.LastPcov_PreviousInput[5 * b_A_tmp + i_0] *
+          Cm[(b_A_tmp << 1) + i_1] + Cm_1[5 * i_1 + i_0];
+      }
+    }
+
+    tmp_7[i_0] = 0.0;
+    tmp_7[i_0] += Cm_1[i_0] * bi[0];
+    tmp_7[i_0] += Cm_1[i_0 + 5] * bi[1];
+    status = tmp_7[i_0] * di[0];
+    tmp_7[i_0 + 5] = 0.0;
+    tmp_7[i_0 + 5] += Cm_1[i_0] * bi[2];
+    tmp_7[i_0 + 5] += Cm_1[i_0 + 5] * bi[3];
+    status += tmp_7[i_0 + 5] * di[1];
+    rtb_xest[i_0] = xk[i_0] + status;
+  }
+
+  /* Memory: '<S2>/Memory' */
+  memcpy(&tmp[0], &Adaptive_DW.Memory_PreviousInput[0], 80U * sizeof(boolean_T));
+
+  /* jcsimotwo Function: '<S2>/optimizer' */
+  memset(&tmp_0[0], 0, 75U * sizeof(real_T));
+  memset(&o_0[0], 0, 80U * sizeof(real_T));
+  memset(&s_0[0], 0, 480U * sizeof(real_T));
+  for (i_0 = 0; i_0 < 15; i_0++) {
+    tmp_1[i_0] = 1.0;
+  }
+
+  memcpy(&n_0[0], &n[0], 400U * sizeof(real_T));
+  memcpy(&o_0[0], &o[0], 80U * sizeof(real_T));
+  memset(&Adaptive_B.dv0[0], 0, 1280U * sizeof(real_T));
+  memcpy(&q_0[0], &q[0], 36U * sizeof(real_T));
+  memcpy(&s_0[0], &s[0], 480U * sizeof(real_T));
+
+  /* Update for Memory: '<S2>/Memory' incorporates:
+   *  jcsimotwo Function: '<S2>/optimizer'
+   *  UnitDelay: '<S2>/last_mv'
+   */
+  Adaptive_mpcblock_optimizer(rseq, vseq, rtb_xest, Adaptive_Y.mv - b_uoff, tmp,
+    Adaptive_ny, b_Mlim, n_0, o_0, Adaptive_B.dv0, b_utarget, b_uoff, q_0, s_0,
+    t, w, tmp_1, b_A, Bu, Bv, b_C, Dv, i, &u, rtb_useq, &status,
+    Adaptive_DW.Memory_PreviousInput);
+
+  /* jcsimotwo Function: '<S2>/optimizer' incorporates:
+   *  Memory: '<S2>/LastPcov'
+   *  UnitDelay: '<S2>/last_mv'
+   */
+  b_uoff = u - b_uoff;
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      b_A_tmp = i_0 + 5 * i_1;
+      b_A_0[b_A_tmp] = 0.0;
+      b_A_1[b_A_tmp] = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        b_A_tmp_0 = 5 * i_1 + i_0;
+        status = b_A[5 * Pk1_tmp + i_0] * Adaptive_DW.LastPcov_PreviousInput[5 *
+          i_1 + Pk1_tmp];
+        b_A_0[b_A_tmp] = status + b_A_0[b_A_tmp_0];
+        b_A_1[b_A_tmp] = status + b_A_1[b_A_tmp_0];
+      }
+    }
+
+    for (i_1 = 0; i_1 < 2; i_1++) {
+      status = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        status += b_A_1[5 * Pk1_tmp + i_0] * Cm[(Pk1_tmp << 1) + i_1];
+      }
+
+      Cm_1[i_0 + 5 * i_1] = Nk[5 * i_1 + i_0] + status;
+    }
+
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      b_A_tmp = i_0 + 5 * i_1;
+      e_0[b_A_tmp] = 0.0;
+      for (Pk1_tmp = 0; Pk1_tmp < 5; Pk1_tmp++) {
+        e_0[b_A_tmp] = b_A_0[5 * Pk1_tmp + i_0] * b_A[5 * Pk1_tmp + i_1] + e_0[5
+          * i_1 + i_0];
+      }
+
+      b_A_2[b_A_tmp] = 0.0;
+      b_A_2[b_A_tmp] = b_A_2[5 * i_1 + i_0] + Cm_1[i_0] * L[i_1];
+      b_A_2[b_A_tmp] = b_A_2[5 * i_1 + i_0] + Cm_1[i_0 + 5] * L[i_1 + 5];
+    }
+  }
+
+  Adaptive_Y.mv = u;
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    status = 0.0;
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      Pk1_tmp = 5 * i_0 + i_1;
+      b_A_0[i_1 + 5 * i_0] = (e_0[Pk1_tmp] - b_A_2[Pk1_tmp]) + Qk[Pk1_tmp];
+      status += b_A[5 * i_1 + i_0] * xk[i_1];
+    }
+
+    /* Update for Memory: '<S2>/last_x' */
+    Adaptive_DW.last_x_PreviousInput[i_0] = (((Bu[i_0] * b_uoff + status) +
+      Bv[i_0] * v) + (L[i_0 + 5] * di[1] + L[i_0] * di[0])) + b_xoff[i_0];
+  }
+
+  /* Update for Memory: '<S2>/LastPcov' incorporates:
+   *  jcsimotwo Function: '<S2>/optimizer'
+   */
+  for (i_0 = 0; i_0 < 5; i_0++) {
+    for (i_1 = 0; i_1 < 5; i_1++) {
+      Adaptive_DW.LastPcov_PreviousInput[i_1 + 5 * i_0] = (b_A_0[5 * i_0 + i_1]
+        + b_A_0[5 * i_1 + i_0]) * 0.5;
+    }
+  }
+
+  /* End of Update for Memory: '<S2>/LastPcov' */
+}
+
+/* Model initialize function */
+void Adaptive_initialize(void)
+{
+  /* Registration code */
+
+  /* initialize non-finites */
+  rt_InitInfAndNaN(sizeof(real_T));
+
+  /* initialize error status */
+  rtmSetErrorStatus(Adaptive_M, (NULL));
+
+  /* states (dwork) */
+  (void) memset((void *)&Adaptive_DW, 0,
+                sizeof(DW_Adaptive_T));
+
+  /* external inputs */
+  (void)memset((void *)&Adaptive_U, 0, sizeof(ExtU_Adaptive_T));
+
+  /* external outputs */
+  Adaptive_Y.mv = 0.0;
+
+  /* InitializeConditions for Memory: '<S2>/LastPcov' */
+  memcpy(&Adaptive_DW.LastPcov_PreviousInput[0],
+         &Adaptive_ConstP.LastPcov_InitialCondition[0], 25U * sizeof(real_T));
+}
+
+/* Model terminate function */
+void Adaptive_terminate(void)
+{
+  /* (no terminate code required) */
+}
+
+/*
+ * File trailer for generated code.
+ *
+ * [EOF]
+ */
